@@ -4,7 +4,7 @@
 
 Claude Code などのエージェントが、必要なときだけ Skill を読み込み、JSON の出力を `jq` で絞り込みながら freee人事労務を扱えるようにすることを目的としています。
 
-> 開発中です。v0.1 では打刻・勤怠の確認・勤怠の修正・申請（作成・一覧）に対応する予定です。現在は認証（`auth`）・ログインユーザーの取得（`user me`）・打刻（`timeclock`）・勤怠の確認（`work-record get / summary`）に対応しています。
+> 開発中です。v0.1 では打刻・勤怠の確認・勤怠の修正・申請（作成・一覧）に対応する予定です。現在は認証（`auth`）・ログインユーザーの取得（`user me`）・打刻（`timeclock`）・勤怠の確認（`work-record get / summary`）・勤怠の修正（`work-record update`）に対応しています。
 
 ## インストール
 
@@ -105,16 +105,33 @@ freee-hr work-record summary 2026-11
 
 `work-record summary` の年月は **給与支払い年月** です（freee の API の仕様）。給与を翌月に支払う事業所では、`2026-11` が10月分の勤怠を指すことがあります。実際の集計期間はレスポンスの `start_date`・`end_date` で確認してください。
 
+### 勤怠の修正
+
+指定日の勤怠記録を登録・更新します。出退勤を指定するときは、休憩を `--break`（複数可）か `--no-break` で必ず指定します。
+
+```bash
+# 9:00〜18:00、休憩 12:00〜13:00、メモつきで登録する（送信前に確認を求めます）
+freee-hr work-record update 2026-11-20 --clock-in 09:00 --clock-out 18:00 --break 12:00-13:00 --note "打刻漏れのため修正"
+
+# 日をまたぐ退勤は日付つきで指定する
+freee-hr work-record update 2026-11-20 --clock-in 18:00 --clock-out "2026-11-21 02:00" --no-break
+
+# 休暇など、フラグに無い項目は API の本文の形の JSON で指定する（フラグの値が優先されます）
+freee-hr work-record update 2026-11-20 --file work-record.json --dry-run
+```
+
+`--file` の JSON は [勤怠の更新 API](https://developer.freee.co.jp/reference/hr/reference) の本文と同じ形です（日時は `YYYY-MM-DD HH:MM:SS`）。`company_id` はプロファイルの事業所が自動で入ります。振替出勤・振替休日・代休出勤・代休は API では登録できません。
+
 ### 書き込み系コマンドの安全策
 
-freee の会社データに書き込むコマンド（現在は `timeclock punch`）は、次の順に安全策を通ります。
+freee の会社データに書き込むコマンド（`timeclock punch`・`work-record update`）は、次の順に安全策を通ります。
 
 1. `--dry-run` を付けると、API を呼ばずに送る予定のリクエスト（事業所・従業員・メソッド・パス・本文）を JSON で出力します。
 2. 読み取り専用のプロファイル（`auth login --read-only`）では送信を拒否します（終了コード2）。
 3. `--yes` が無い場合は、送る予定の内容を表示して `[y/N]` で確認します。`y` 以外の答え、または標準入力が無い場合は送信しません（終了コード2）。
 4. 送信に失敗しても自動で再試行しません（二重の打刻を防ぐため）。
 
-Claude Code から使う場合は、プロジェクトの `.claude/settings.json` で書き込み系コマンドを `ask` にしておくと、Claude Code が `--yes` を付けて実行しようとしても、人の確認が入ります（[権限の設定](https://code.claude.com/docs/en/permissions)。`ask` は `allow` より優先されます）。グローバルフラグをサブコマンドの前に書いた場合と、カレントディレクトリでビルドしたバイナリ（`./freee-hr`）を使う場合にも一致するよう、4通りの形を並べます。
+Claude Code から使う場合は、プロジェクトの `.claude/settings.json` で書き込み系コマンドを `ask` にしておくと、Claude Code が `--yes` を付けて実行しようとしても、人の確認が入ります（[権限の設定](https://code.claude.com/docs/en/permissions)。`ask` は `allow` より優先されます）。グローバルフラグをサブコマンドの前に書いた場合と、カレントディレクトリでビルドしたバイナリ（`./freee-hr`）を使う場合にも一致するよう、コマンドごとに4通りの形を並べます。
 
 ```json
 {
@@ -123,7 +140,11 @@ Claude Code から使う場合は、プロジェクトの `.claude/settings.json
       "Bash(freee-hr timeclock punch *)",
       "Bash(freee-hr * timeclock punch *)",
       "Bash(./freee-hr timeclock punch *)",
-      "Bash(./freee-hr * timeclock punch *)"
+      "Bash(./freee-hr * timeclock punch *)",
+      "Bash(freee-hr work-record update *)",
+      "Bash(freee-hr * work-record update *)",
+      "Bash(./freee-hr work-record update *)",
+      "Bash(./freee-hr * work-record update *)"
     ]
   }
 }

@@ -32,3 +32,15 @@ func WorkRecordSummaryRequest(companyID, employeeID, year, month int, withRecord
 		Query:  q,
 	}
 }
+
+// UpdateWorkRecordRequest は、指定日（YYYY-MM-DD）の勤怠記録を登録・更新するリクエストを返します（PUT）。
+//
+// body には API の更新の本文（company_id・work_record_segments・break_records・note・holidays など）をそのまま渡します。
+// 日時は "YYYY-MM-DD HH:MM:SS" の形式です。振替出勤・振替休日・代休出勤・代休の登録は API ではできません。
+func UpdateWorkRecordRequest(employeeID int, date string, body map[string]any) Request {
+	return Request{
+		Method: http.MethodPut,
+		Path:   fmt.Sprintf("/api/v1/employees/%d/work_records/%s", employeeID, date),
+		Body:   body,
+	}
+}
