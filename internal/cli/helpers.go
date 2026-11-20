@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"io"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 // defaultTimeoutSeconds は --timeout の既定値（秒）です。
@@ -24,4 +26,30 @@ func writeJSON(w io.Writer, v any) error {
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
 	return enc.Encode(v)
+}
+
+// usageArgs は cobra の引数検証を包み、検証の失敗を使い方の誤り（終了コード2）にします。
+func usageArgs(validate cobra.PositionalArgs) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if err := validate(cmd, args); err != nil {
+			return &exitError{code: exitCodeUsageError, err: err}
+		}
+		return nil
+	}
+}
+
+// noArgs は引数を受け付けないコマンドの引数検証です。余分な引数は使い方の誤り（終了コード2）にします。
+var noArgs = usageArgs(cobra.NoArgs)
+
+// newGroupCmd はサブコマンドをまとめるだけのコマンド（auth・user など）を生成します。
+// サブコマンドを省略した場合はヘルプを表示し、存在しないサブコマンドは使い方の誤り（終了コード2）にします。
+func newGroupCmd(use, short string) *cobra.Command {
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  noArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
 }

@@ -118,12 +118,20 @@ type globalFlags struct {
 func (a *App) buildRootCommand() *cobra.Command {
 	flags := &globalFlags{}
 
-	root := &cobra.Command{
-		Use:           "freee-hr",
-		Short:         "freee人事労務 API を操作するCLI（出力は常にJSON）",
-		Version:       Version,
-		SilenceUsage:  true,
-		SilenceErrors: true,
+	root := newGroupCmd("freee-hr", "freee人事労務 API を操作するCLI（出力は常にJSON）")
+	root.Version = Version
+	root.SilenceUsage = true
+	root.SilenceErrors = true
+	// 不正なフラグ・フラグの値は使い方の誤り（終了コード2）にする（サブコマンドにも引き継がれる）
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return &exitError{code: exitCodeUsageError, err: err}
+	})
+	// グローバルフラグの値を、各コマンドの実行前に検証する
+	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if flags.timeout <= 0 {
+			return usageErrorf("--timeout には1以上の秒数を指定してください: %d", flags.timeout)
+		}
+		return nil
 	}
 	root.PersistentFlags().StringVar(&flags.profile, "profile", "default", "使用するプロファイル名")
 	root.PersistentFlags().IntVar(&flags.timeout, "timeout", defaultTimeoutSeconds, "APIリクエストのタイムアウト（秒）")

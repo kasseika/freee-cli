@@ -2,6 +2,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -31,7 +32,7 @@ func TestStore_SaveAndLoad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "freee-hr", "credentials.json")
 	store := NewStore(path)
 
-	if err := store.Save("default", sampleCredentials()); err != nil {
+	if err := store.Save(context.Background(), "default", sampleCredentials()); err != nil {
 		t.Fatalf("保存に失敗しました: %v", err)
 	}
 	got, err := store.Load("default")
@@ -50,7 +51,7 @@ func TestStore_SaveAndLoad(t *testing.T) {
 func TestStore_FilePermission(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "freee-hr")
 	path := filepath.Join(dir, "credentials.json")
-	if err := NewStore(path).Save("default", sampleCredentials()); err != nil {
+	if err := NewStore(path).Save(context.Background(), "default", sampleCredentials()); err != nil {
 		t.Fatalf("保存に失敗しました: %v", err)
 	}
 
@@ -73,10 +74,10 @@ func TestStore_FilePermission(t *testing.T) {
 // TestStore_KeepsOtherProfiles は別プロファイルの保存で既存のプロファイルが消えないことを検証します。
 func TestStore_KeepsOtherProfiles(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "credentials.json"))
-	if err := store.Save("本番", sampleCredentials()); err != nil {
+	if err := store.Save(context.Background(), "本番", sampleCredentials()); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Save("テスト事業所", sampleCredentials()); err != nil {
+	if err := store.Save(context.Background(), "テスト事業所", sampleCredentials()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Load("本番"); err != nil {
@@ -96,16 +97,100 @@ func TestStore_LoadNotFound(t *testing.T) {
 // TestStore_Delete は削除したプロファイルが読み込めなくなること、未保存なら ErrProfileNotFound を返すことを検証します。
 func TestStore_Delete(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "credentials.json"))
-	if err := store.Save("default", sampleCredentials()); err != nil {
+	if err := store.Save(context.Background(), "default", sampleCredentials()); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Delete("default"); err != nil {
+	if err := store.Delete(context.Background(), "default"); err != nil {
 		t.Fatalf("削除に失敗しました: %v", err)
 	}
 	if _, err := store.Load("default"); !errors.Is(err, ErrProfileNotFound) {
 		t.Errorf("削除後も読み込めてしまいます: %v", err)
 	}
-	if err := store.Delete("default"); !errors.Is(err, ErrProfileNotFound) {
+	if err := store.Delete(context.Background(), "default"); !errors.Is(err, ErrProfileNotFound) {
 		t.Errorf("2回目の削除のエラー = %v, 期待値 = ErrProfileNotFound", err)
+	}
+}
+
+// TestStore_SaveWaitsForLock は、別の処理（トークンの更新など）がロックを持っている間、
+// Save が書き込みを待つことを検証します。待たずに書き込むと、更新処理が古い内容で上書きし、保存したプロファイルが消えるためです。
+func TestStore_SaveWaitsForLock(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "credentials.json"))
+	unlock, err := store.Lock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- NewStore(store.path).Save(context.Background(), "新しいプロファイル", sampleCredentials())
+	}()
+
+	// 検証: ロックを解除するまでは保存が終わらない
+	select {
+	case err := <-done:
+		t.Fatalf("ロック中なのに保存が終わりました（err=%v）", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("保存に失敗しました: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ロックを解除しても保存が終わりません")
+	}
+	if _, err := store.Load("新しいプロファイル"); err != nil {
+		t.Errorf("保存したプロファイルが読み込めません: %v", err)
+	}
+}
+
+// TestStore_DeleteWaitsForLock は、ロック中は Delete も待つことを検証します。
+func TestStore_DeleteWaitsForLock(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "credentials.json"))
+	if err := store.Save(context.Background(), "default", sampleCredentials()); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := store.Lock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- NewStore(store.path).Delete(context.Background(), "default") }()
+	select {
+	case err := <-done:
+		t.Fatalf("ロック中なのに削除が終わりました（err=%v）", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("削除に失敗しました: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ロックを解除しても削除が終わりません")
+	}
+}
+
+// TestStore_LockHonorsContext は、ロックを待っている間にコンテキストの期限が来たら、すぐに諦めることを検証します。
+func TestStore_LockHonorsContext(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "credentials.json"))
+	unlock, err := store.Lock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err = NewStore(store.path).Lock(ctx)
+	if err == nil {
+		t.Fatal("ロック中なのに2つ目のロックを取得できました")
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Errorf("コンテキストの期限を過ぎても待ち続けました（%s）", elapsed)
 	}
 }

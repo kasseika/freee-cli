@@ -9,6 +9,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -139,7 +140,18 @@ func (s *Store) Load(profile string) (*Credentials, error) {
 }
 
 // Save はプロファイルの認証情報を保存します。ほかのプロファイルはそのまま残します。
-func (s *Store) Save(profile string, creds *Credentials) error {
+// トークンの更新と同時に書き込んで内容を失わないよう、ロックを取得してから書き込みます。
+func (s *Store) Save(ctx context.Context, profile string, creds *Credentials) error {
+	unlock, err := s.Lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return s.saveLocked(profile, creds)
+}
+
+// saveLocked は、呼び出し元がロックを取得済みであることを前提に、プロファイルの認証情報を保存します。
+func (s *Store) saveLocked(profile string, creds *Credentials) error {
 	all, err := s.readAll()
 	if err != nil {
 		return err
@@ -149,7 +161,14 @@ func (s *Store) Save(profile string, creds *Credentials) error {
 }
 
 // Delete はプロファイルの認証情報を削除します。保存されていない場合は ErrProfileNotFound を返します。
-func (s *Store) Delete(profile string) error {
+// Save と同じく、ロックを取得してから書き込みます。
+func (s *Store) Delete(ctx context.Context, profile string) error {
+	unlock, err := s.Lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	all, err := s.readAll()
 	if err != nil {
 		return err
@@ -164,24 +183,21 @@ func (s *Store) Delete(profile string) error {
 // Lock は認証情報ファイルに対する排他ロック（別プロセス間でも有効）を取得し、解除する関数を返します。
 //
 // ロックは認証情報ファイルと同じディレクトリの `<ファイル名>.lock` に対する flock で実現します。
-// lockTimeout を過ぎても取得できない場合はエラーを返します。
-func (s *Store) Lock() (unlock func(), err error) {
+// ctx の期限、または lockTimeout のどちらか早いほうを過ぎても取得できない場合はエラーを返します。
+func (s *Store) Lock(ctx context.Context) (unlock func(), err error) {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return nil, fmt.Errorf("認証情報ディレクトリの作成に失敗しました: %w", err)
 	}
+	lockCtx, cancel := context.WithTimeout(ctx, lockTimeout)
+	defer cancel()
+
 	lock := flock.New(s.path + ".lock")
-	deadline := time.Now().Add(lockTimeout)
-	for {
-		locked, err := lock.TryLock()
-		if err != nil {
-			return nil, fmt.Errorf("認証情報ファイルのロックに失敗しました: %w", err)
-		}
-		if locked {
-			return func() { _ = lock.Unlock() }, nil
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("認証情報ファイルのロックを %s 以内に取得できませんでした（別の freee-hr が実行中の可能性があります）", lockTimeout)
-		}
-		time.Sleep(lockRetryInterval)
+	locked, err := lock.TryLockContext(lockCtx, lockRetryInterval)
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		return nil, fmt.Errorf("認証情報ファイルのロックに失敗しました: %w", err)
 	}
+	if !locked {
+		return nil, fmt.Errorf("認証情報ファイルのロックを取得できませんでした（別の freee-hr が実行中の可能性があります）: %w", lockCtx.Err())
+	}
+	return func() { _ = lock.Unlock() }, nil
 }

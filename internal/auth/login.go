@@ -11,6 +11,7 @@
 // どちらの方式でも `prompt=select_company` を付け、トークンを1つの事業所に限定します。
 // freee のドキュメントに PKCE の記載が無いため、CSRF 対策は state の照合で行います
 // （手動方式ではリダイレクトを受けないため state を照合できません）。
+// ループバック方式では、state が一致しないアクセスは無視し、正しいコールバックを待ち続けます。
 package auth
 
 import (
@@ -44,6 +45,11 @@ const (
 
 	defaultLoginTimeout = 5 * time.Minute
 	stateBytes          = 16
+
+	// callbackReadHeaderTimeout はコールバックのリクエストヘッダーを読み終えるまでの上限です。
+	callbackReadHeaderTimeout = 10 * time.Second
+	// serverShutdownTimeout はローカルサーバーを閉じるときに、応答を書き終えるのを待つ上限です。
+	serverShutdownTimeout = 2 * time.Second
 )
 
 // Endpoint は freee のトークン取得に使う OAuth 2.0 のエンドポイント設定を返します。
@@ -126,11 +132,10 @@ func loginManual(ctx context.Context, config *oauth2.Config, opts LoginOptions) 
 	showAuthURL(opts, config.AuthCodeURL(state, oauth2.SetAuthURLParam("prompt", "select_company")))
 	_, _ = fmt.Fprint(opts.Stderr, "表示された認可コードを貼り付けて Enter を押してください: ")
 
-	line, err := bufio.NewReader(opts.Stdin).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("認可コードの読み込みに失敗しました: %w", err)
+	code, err := readLine(ctx, opts.Stdin)
+	if err != nil {
+		return nil, err
 	}
-	code := strings.TrimSpace(line)
 	if code == "" {
 		return nil, errors.New("認可コードが入力されませんでした")
 	}
@@ -139,6 +144,29 @@ func loginManual(ctx context.Context, config *oauth2.Config, opts LoginOptions) 
 		return nil, fmt.Errorf("トークンの取得に失敗しました: %w", err)
 	}
 	return token, nil
+}
+
+// readLine は r から1行を読み、前後の空白を除いて返します。
+// 標準入力が開いたまま何も書き込まれない場合に備え、ctx の期限を過ぎたら読み込みを待たずにエラーを返します。
+func readLine(ctx context.Context, r io.Reader) (string, error) {
+	type result struct {
+		line string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		line, err := bufio.NewReader(r).ReadString('\n')
+		ch <- result{line: line, err: err}
+	}()
+	select {
+	case res := <-ch:
+		if res.err != nil && !errors.Is(res.err, io.EOF) {
+			return "", fmt.Errorf("認可コードの読み込みに失敗しました: %w", res.err)
+		}
+		return strings.TrimSpace(res.line), nil
+	case <-ctx.Done():
+		return "", fmt.Errorf("認可コードの入力がタイムアウトしました。もう一度 `freee-hr auth login --manual` を実行してください: %w", ctx.Err())
+	}
 }
 
 // loginCallbackResult はコールバックの処理結果を Login 本体へ伝える内部の型です。
@@ -165,19 +193,28 @@ func loginLoopback(ctx context.Context, config *oauth2.Config, opts LoginOptions
 	}
 	config.RedirectURL = fmt.Sprintf("http://localhost:%d/callback", tcpAddr.Port)
 
-	// コールバックは1回だけ処理する（2回目以降のアクセスで結果を上書きしない）
+	// 正しい state を持つコールバックだけを結果として扱う。state の無い・一致しないアクセス
+	// （別のプログラムや古いタブからのリクエスト）は 400 を返して無視し、正しいコールバックを待ち続ける。
 	resultCh := make(chan loginCallbackResult, 1)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
-		result := handleCallback(w, r, state)
+		result, ok := handleCallback(w, r, state)
+		if !ok {
+			return
+		}
 		select {
 		case resultCh <- result:
 		default:
 		}
 	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: callbackReadHeaderTimeout}
 	go func() { _ = server.Serve(listener) }()
-	defer func() { _ = server.Close() }()
+	defer func() {
+		// ブラウザへの応答を書き終えてから閉じる
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
 
 	showAuthURL(opts, config.AuthCodeURL(state, oauth2.SetAuthURLParam("prompt", "select_company")))
 
@@ -197,23 +234,24 @@ func loginLoopback(ctx context.Context, config *oauth2.Config, opts LoginOptions
 }
 
 // handleCallback はコールバックのクエリを検証し、ブラウザに結果を表示します。
-func handleCallback(w http.ResponseWriter, r *http.Request, expectedState string) loginCallbackResult {
+// state が一致しないリクエストは ok=false を返し、ログインの結果としては扱いません。
+func handleCallback(w http.ResponseWriter, r *http.Request, expectedState string) (result loginCallbackResult, ok bool) {
 	q := r.URL.Query()
+	if q.Get("state") != expectedState {
+		http.Error(w, "stateが一致しません。このリクエストは無視しました。", http.StatusBadRequest)
+		return loginCallbackResult{}, false
+	}
 	if errParam := q.Get("error"); errParam != "" {
 		http.Error(w, "認可が拒否されました: "+errParam, http.StatusBadRequest)
-		return loginCallbackResult{err: fmt.Errorf("認可が拒否されました: %s", errParam)}
-	}
-	if q.Get("state") != expectedState {
-		http.Error(w, "stateが一致しません。認証を中断しました。", http.StatusBadRequest)
-		return loginCallbackResult{err: errors.New("コールバックのstateが一致しません（CSRF対策のため中断しました）")}
+		return loginCallbackResult{err: fmt.Errorf("認可が拒否されました: %s", errParam)}, true
 	}
 	code := q.Get("code")
 	if code == "" {
 		http.Error(w, "認可コードが含まれていません。", http.StatusBadRequest)
-		return loginCallbackResult{err: errors.New("コールバックに認可コードが含まれていません")}
+		return loginCallbackResult{err: errors.New("コールバックに認可コードが含まれていません")}, true
 	}
 	_, _ = fmt.Fprintln(w, "認証が完了しました。このタブを閉じて構いません。")
-	return loginCallbackResult{code: code}
+	return loginCallbackResult{code: code}, true
 }
 
 // randomState は CSRF 対策用のランダムな state 値を生成します。

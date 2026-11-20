@@ -6,14 +6,11 @@ import (
 )
 
 func (a *App) newUserCmd(flags *globalFlags) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "user",
-		Short: "ログインユーザーの情報",
-	}
+	cmd := newGroupCmd("user", "ログインユーザーの情報")
 	cmd.AddCommand(&cobra.Command{
 		Use:   "me",
 		Short: "ログインユーザーと所属する事業所（事業所ID・従業員ID）を取得します",
-		Args:  cobra.NoArgs,
+		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _, err := a.newClient(flags.profile)
 			if err != nil {

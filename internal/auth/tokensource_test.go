@@ -57,7 +57,7 @@ func saveWithExpiry(t *testing.T, store *Store, expiry time.Time) {
 	creds.AccessToken = "保存済みのアクセストークン"
 	creds.RefreshToken = "保存済みのリフレッシュトークン"
 	creds.Expiry = expiry
-	if err := store.Save("default", creds); err != nil {
+	if err := store.Save(context.Background(), "default", creds); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -168,6 +168,22 @@ func TestTokenSource_RefreshFailure(t *testing.T) {
 	_, err := NewTokenSource(store, "default", newTestConfig(server.URL)).Token(context.Background())
 	if !errors.Is(err, ErrTokenRefresh) {
 		t.Fatalf("エラー = %v, 期待値 = ErrTokenRefresh", err)
+	}
+}
+
+// TestTokenSource_RefreshNetworkFailure は、通信の失敗でリフレッシュできなかった場合は ErrTokenRefresh（再ログインが必要）にしないことを検証します。
+// リフレッシュトークンはまだ有効なので、再ログインを案内すると利用者を誤らせるためです。
+func TestTokenSource_RefreshNetworkFailure(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "credentials.json"))
+	saveWithExpiry(t, store, time.Now().Add(-time.Minute))
+
+	// 前提: トークンエンドポイントに接続できない
+	_, err := NewTokenSource(store, "default", newTestConfig("http://127.0.0.1:1/token")).Token(context.Background())
+	if err == nil {
+		t.Fatal("接続できないのにトークンを取得できました")
+	}
+	if errors.Is(err, ErrTokenRefresh) {
+		t.Errorf("通信の失敗を再ログインが必要なエラーとして扱っています: %v", err)
 	}
 }
 

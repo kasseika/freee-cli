@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -117,18 +118,21 @@ func TestLogin_Loopback(t *testing.T) {
 	}
 }
 
-// TestLogin_LoopbackStateMismatch は、コールバックのstateが一致しない場合に中断することを検証します。
+// TestLogin_LoopbackStateMismatch は、stateが一致しないコールバックでは認可コードを使わず、
+// 正しいコールバックが来ないまま待ち時間を過ぎると失敗することを検証します。
 func TestLogin_LoopbackStateMismatch(t *testing.T) {
 	var received []tokenRequest
 	tokenServer := newTokenServer(t, &received)
 
-	// 前提: 攻撃者が用意した別のstateでコールバックが呼ばれる
+	// 前提: 攻撃者が用意した別のstateでコールバックが呼ばれ、正しいコールバックは来ない
+	statuses := make(chan int, 1)
 	openBrowser := func(raw string) error {
 		u, _ := url.Parse(raw)
 		callback := u.Query().Get("redirect_uri") + "?code=" + url.QueryEscape("偽の認可コード") + "&state=" + url.QueryEscape("別のstate")
 		go func() {
 			resp, err := http.Get(callback)
 			if err == nil {
+				statuses <- resp.StatusCode
 				_ = resp.Body.Close()
 			}
 		}()
@@ -138,13 +142,89 @@ func TestLogin_LoopbackStateMismatch(t *testing.T) {
 	_, err := Login(context.Background(), LoginOptions{
 		ClientID: "テスト用クライアントID", ClientSecret: "テスト用シークレット",
 		AuthURL: "https://accounts.example.test/public_api/authorize", TokenURL: tokenServer.URL,
-		OpenBrowser: openBrowser, Stdin: strings.NewReader(""), Stderr: &bytes.Buffer{}, Timeout: 5 * time.Second,
+		OpenBrowser: openBrowser, Stdin: strings.NewReader(""), Stderr: &bytes.Buffer{}, Timeout: 500 * time.Millisecond,
 	})
 	if err == nil {
 		t.Fatal("stateが一致しないのにログインが成功しました")
 	}
 	if len(received) != 0 {
 		t.Errorf("stateが一致しない場合はトークンを要求してはいけません（呼び出し回数 = %d）", len(received))
+	}
+	select {
+	case status := <-statuses:
+		if status != http.StatusBadRequest {
+			t.Errorf("不正なコールバックへの応答 = %d, 期待値 = 400", status)
+		}
+	case <-time.After(time.Second):
+		t.Error("不正なコールバックに応答していません")
+	}
+}
+
+// TestLogin_LoopbackIgnoresStrayRequest は、無関係なリクエスト（stateの無いアクセス）が先に来ても、
+// そのあとの正しいコールバックでログインできることを検証します。
+func TestLogin_LoopbackIgnoresStrayRequest(t *testing.T) {
+	var received []tokenRequest
+	tokenServer := newTokenServer(t, &received)
+
+	openBrowser := func(raw string) error {
+		u, _ := url.Parse(raw)
+		q := u.Query()
+		go func() {
+			// 前提: 別のプログラムが先にコールバックURLへアクセスする
+			if resp, err := http.Get(q.Get("redirect_uri") + "?x=1"); err == nil {
+				_ = resp.Body.Close()
+			}
+			// そのあと、ブラウザから正しいコールバックが来る
+			if resp, err := http.Get(q.Get("redirect_uri") + "?code=" + url.QueryEscape("認可コード123") + "&state=" + url.QueryEscape(q.Get("state"))); err == nil {
+				_ = resp.Body.Close()
+			}
+		}()
+		return nil
+	}
+
+	token, err := Login(context.Background(), LoginOptions{
+		ClientID: "テスト用クライアントID", ClientSecret: "テスト用シークレット",
+		AuthURL: "https://accounts.example.test/public_api/authorize", TokenURL: tokenServer.URL,
+		OpenBrowser: openBrowser, Stdin: strings.NewReader(""), Stderr: &bytes.Buffer{}, Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("ログインに失敗しました: %v", err)
+	}
+	if token.AccessToken != "新しいアクセストークン" || len(received) != 1 || received[0].form.Get("code") != "認可コード123" {
+		t.Errorf("正しい認可コードでトークンを取得していません: token=%+v received=%+v", token, received)
+	}
+}
+
+// TestLogin_LoopbackDenied は、利用者が「許可しない」を選んだ（正しいstateで error が返った）場合に、すぐ失敗することを検証します。
+func TestLogin_LoopbackDenied(t *testing.T) {
+	var received []tokenRequest
+	tokenServer := newTokenServer(t, &received)
+
+	openBrowser := func(raw string) error {
+		u, _ := url.Parse(raw)
+		q := u.Query()
+		go func() {
+			if resp, err := http.Get(q.Get("redirect_uri") + "?error=access_denied&state=" + url.QueryEscape(q.Get("state"))); err == nil {
+				_ = resp.Body.Close()
+			}
+		}()
+		return nil
+	}
+
+	started := time.Now()
+	_, err := Login(context.Background(), LoginOptions{
+		ClientID: "テスト用クライアントID", ClientSecret: "テスト用シークレット",
+		AuthURL: "https://accounts.example.test/public_api/authorize", TokenURL: tokenServer.URL,
+		OpenBrowser: openBrowser, Stdin: strings.NewReader(""), Stderr: &bytes.Buffer{}, Timeout: 5 * time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "access_denied") {
+		t.Fatalf("エラー = %v, 期待値 = 認可が拒否された旨のエラー", err)
+	}
+	if time.Since(started) > 3*time.Second {
+		t.Error("拒否されたのに待ち時間いっぱいまで待ちました")
+	}
+	if len(received) != 0 {
+		t.Errorf("拒否された場合はトークンを要求してはいけません（呼び出し回数 = %d）", len(received))
 	}
 }
 
@@ -220,6 +300,27 @@ func TestLogin_ManualEmptyCode(t *testing.T) {
 	}
 	if len(received) != 0 {
 		t.Errorf("認可コードが空の場合はトークンを要求してはいけません（呼び出し回数 = %d）", len(received))
+	}
+}
+
+// TestLogin_ManualTimeout は、手動方式で認可コードが入力されないまま待ち時間を過ぎると失敗することを検証します。
+func TestLogin_ManualTimeout(t *testing.T) {
+	// 前提: 標準入力は開いたまま、何も書き込まれない
+	stdin, writer := io.Pipe()
+	t.Cleanup(func() { _ = writer.Close() })
+
+	started := time.Now()
+	_, err := Login(context.Background(), LoginOptions{
+		ClientID: "テスト用クライアントID", ClientSecret: "テスト用シークレット", Manual: true,
+		AuthURL: "https://accounts.example.test/public_api/authorize", TokenURL: "http://127.0.0.1:1/token",
+		OpenBrowser: func(string) error { return nil }, Stdin: stdin, Stderr: &bytes.Buffer{},
+		Timeout: 100 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("認可コードが入力されないのにログインが成功しました")
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Errorf("待ち時間を過ぎても入力を待ち続けました（%s）", time.Since(started))
 	}
 }
 

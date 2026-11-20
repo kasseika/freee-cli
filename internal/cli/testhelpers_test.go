@@ -6,6 +6,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -54,7 +55,7 @@ func newTestEnv(t *testing.T, api http.HandlerFunc) *testEnv {
 func (e *testEnv) saveLoggedIn(t *testing.T, profile string, readOnly bool) {
 	t.Helper()
 	employeeID := 456
-	err := e.store.Save(profile, &auth.Credentials{
+	err := e.store.Save(context.Background(), profile, &auth.Credentials{
 		ClientID:     "テスト用クライアントID",
 		ClientSecret: "テスト用シークレット",
 		AccessToken:  "保存済みのアクセストークン",

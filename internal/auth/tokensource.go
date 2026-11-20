@@ -10,12 +10,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"golang.org/x/oauth2"
 )
 
-// ErrTokenRefresh はアクセストークンの更新に失敗した場合のエラーです（再ログインが必要です）。
-var ErrTokenRefresh = errors.New("アクセストークンの更新に失敗しました。もう一度 `freee-hr auth login` を実行してください")
+// ErrTokenRefresh は、トークンエンドポイントがリフレッシュを拒否した（リフレッシュトークンが失効している等）場合のエラーです。
+// 再ログインが必要です。通信の失敗など、再ログインで解決しない失敗にはこのエラーを使いません。
+var ErrTokenRefresh = errors.New("アクセストークンの更新が拒否されました。もう一度 `freee-hr auth login` を実行してください")
 
 // TokenSource は Store と連動して有効なアクセストークンを返すトークンプロバイダです。
 type TokenSource struct {
@@ -31,7 +33,7 @@ func NewTokenSource(store *Store, profile string, config *oauth2.Config) *TokenS
 
 // Token は有効なアクセストークンを返します。期限切れの場合は更新し、新しいトークンを保存します。
 func (t *TokenSource) Token(ctx context.Context) (string, error) {
-	unlock, err := t.store.Lock()
+	unlock, err := t.store.Lock(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -53,15 +55,27 @@ func (t *TokenSource) Token(ctx context.Context) (string, error) {
 
 	refreshed, err := t.config.TokenSource(ctx, current).Token()
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrTokenRefresh, err)
+		return "", classifyRefreshError(err)
 	}
 	creds.AccessToken = refreshed.AccessToken
 	if refreshed.RefreshToken != "" {
 		creds.RefreshToken = refreshed.RefreshToken
 	}
 	creds.Expiry = refreshed.Expiry
-	if err := t.store.Save(t.profile, creds); err != nil {
-		return "", fmt.Errorf("更新した認証情報の保存に失敗しました: %w", err)
+	if err := t.store.saveLocked(t.profile, creds); err != nil {
+		// 古いリフレッシュトークンは更新に使った時点で失効しているため、保存に失敗すると再ログインが必要になる
+		return "", fmt.Errorf("%w（更新後のトークンを保存できませんでした: %v）", ErrTokenRefresh, err)
 	}
 	return refreshed.AccessToken, nil
+}
+
+// classifyRefreshError は、リフレッシュの失敗を「再ログインが必要な失敗」とそれ以外に分けます。
+// トークンエンドポイントが 4xx で拒否した場合だけ ErrTokenRefresh とし、通信の失敗や 5xx はそのまま返します。
+func classifyRefreshError(err error) error {
+	var retrieveErr *oauth2.RetrieveError
+	if errors.As(err, &retrieveErr) && retrieveErr.Response != nil &&
+		retrieveErr.Response.StatusCode >= http.StatusBadRequest && retrieveErr.Response.StatusCode < http.StatusInternalServerError {
+		return fmt.Errorf("%w: %v", ErrTokenRefresh, err)
+	}
+	return fmt.Errorf("アクセストークンの更新に失敗しました（通信の失敗の可能性があります。時間をおいて再実行してください）: %w", err)
 }

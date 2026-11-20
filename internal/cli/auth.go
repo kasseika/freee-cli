@@ -10,11 +10,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/kasseika/freee-cli/internal/auth"
 	"github.com/kasseika/freee-cli/internal/freeehr"
@@ -27,10 +29,7 @@ const (
 )
 
 func (a *App) newAuthCmd(flags *globalFlags) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "auth",
-		Short: "認証の管理",
-	}
+	cmd := newGroupCmd("auth", "認証の管理")
 	cmd.AddCommand(a.newAuthLoginCmd(flags))
 	cmd.AddCommand(a.newAuthStatusCmd(flags))
 	cmd.AddCommand(a.newAuthLogoutCmd(flags))
@@ -48,16 +47,22 @@ func (a *App) newAuthLoginCmd(flags *globalFlags) *cobra.Command {
 		Long: "OAuth 2.0 の認可コードフローでログインします。ブラウザで事業所を選んで「許可する」を押してください。\n" +
 			"既定では http://localhost:<port>/callback で認可コードを受け取ります（freee のアプリにこのコールバックURLを登録してください）。\n" +
 			"--manual を付けると、ブラウザに表示された認可コードを貼り付ける方式（urn:ietf:wg:oauth:2.0:oob）になります。",
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Args: noArgs,
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			if clientID == "" {
 				clientID = os.Getenv(envClientID)
 			}
 			if clientSecret == "" {
 				clientSecret = os.Getenv(envClientSecret)
 			}
+			// 対話入力と、手動方式の認可コードの読み込みで同じリーダーを使う。
+			// 別々にバッファリングすると、先に読んだ側がまとめて読み進め、認可コードの行を失うためである。
+			stdin := bufio.NewReader(a.Stdin)
 			if clientID == "" || clientSecret == "" {
-				clientID, clientSecret = a.promptClientCredentials(clientID, clientSecret)
+				clientID, clientSecret, err = a.promptClientCredentials(stdin, clientID, clientSecret)
+				if err != nil {
+					return err
+				}
 			}
 			if clientID == "" || clientSecret == "" {
 				return usageErrorf("クライアントIDとクライアントシークレットが必要です。"+
@@ -72,7 +77,7 @@ func (a *App) newAuthLoginCmd(flags *globalFlags) *cobra.Command {
 				AuthURL:      a.AuthURL,
 				TokenURL:     a.TokenURL,
 				OpenBrowser:  a.OpenBrowser,
-				Stdin:        a.Stdin,
+				Stdin:        stdin,
 				Stderr:       a.Stderr,
 			})
 			if err != nil {
@@ -112,7 +117,7 @@ func (a *App) newAuthLoginCmd(flags *globalFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := store.Save(flags.profile, creds); err != nil {
+			if err := store.Save(ctx, flags.profile, creds); err != nil {
 				return err
 			}
 			return writeJSON(a.Stdout, newAuthStatus(flags.profile, creds))
@@ -145,21 +150,55 @@ func (a *App) lookupCompany(ctx context.Context, accessToken string, companyID i
 }
 
 // promptClientCredentials は、標準入力からクライアントID・シークレットを対話的に読み込みます。
+// 標準入力が端末の場合、Client Secret は画面に表示せずに読み込みます。
 // 標準入力が無い場合（Claude Code の Bash など）は空文字列のまま返り、呼び出し元が使い方の誤りとして扱います。
-func (a *App) promptClientCredentials(clientID, clientSecret string) (string, string) {
-	reader := bufio.NewReader(a.Stdin)
+func (a *App) promptClientCredentials(stdin *bufio.Reader, clientID, clientSecret string) (string, string, error) {
 	if clientID == "" {
 		_, _ = fmt.Fprintln(a.Stderr, "freee アプリのクライアント情報が設定されていません。")
 		_, _ = fmt.Fprint(a.Stderr, "Client ID: ")
-		line, _ := reader.ReadString('\n')
-		clientID = strings.TrimSpace(line)
+		line, err := readPromptLine(stdin)
+		if err != nil {
+			return "", "", err
+		}
+		clientID = line
 	}
 	if clientSecret == "" {
 		_, _ = fmt.Fprint(a.Stderr, "Client Secret: ")
-		line, _ := reader.ReadString('\n')
-		clientSecret = strings.TrimSpace(line)
+		if fd, ok := a.terminalFD(); ok {
+			secret, err := term.ReadPassword(fd)
+			_, _ = fmt.Fprintln(a.Stderr)
+			if err != nil {
+				return "", "", fmt.Errorf("クライアントシークレットの読み込みに失敗しました: %w", err)
+			}
+			clientSecret = strings.TrimSpace(string(secret))
+		} else {
+			line, err := readPromptLine(stdin)
+			if err != nil {
+				return "", "", err
+			}
+			clientSecret = line
+		}
 	}
-	return clientID, clientSecret
+	return clientID, clientSecret, nil
+}
+
+// readPromptLine は1行を読み、前後の空白を除いて返します。入力の終わり（EOF）は空の入力として扱います。
+func readPromptLine(r *bufio.Reader) (string, error) {
+	line, err := r.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("標準入力の読み込みに失敗しました: %w", err)
+	}
+	return strings.TrimSpace(line), nil
+}
+
+// terminalFD は、標準入力が端末であればそのファイルディスクリプタを返します。
+func (a *App) terminalFD() (int, bool) {
+	f, ok := a.Stdin.(*os.File)
+	if !ok {
+		return 0, false
+	}
+	fd := int(f.Fd())
+	return fd, term.IsTerminal(fd)
 }
 
 // authStatus は `auth status` と `auth login` が出力するプロファイルの状態です。
@@ -191,7 +230,7 @@ func (a *App) newAuthStatusCmd(flags *globalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "ログイン状態（事業所・従業員・読み取り専用か）を表示します",
-		Args:  cobra.NoArgs,
+		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store, err := a.credentialsStore()
 			if err != nil {
@@ -210,13 +249,13 @@ func (a *App) newAuthLogoutCmd(flags *globalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
 		Short: "ログアウトします（このプロファイルの保存済みの認証情報を削除します）",
-		Args:  cobra.NoArgs,
+		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store, err := a.credentialsStore()
 			if err != nil {
 				return err
 			}
-			if err := store.Delete(flags.profile); err != nil {
+			if err := store.Delete(cmd.Context(), flags.profile); err != nil {
 				return err
 			}
 			_, _ = fmt.Fprintf(a.Stderr, "ログアウトしました（プロファイル: %s）\n", flags.profile)

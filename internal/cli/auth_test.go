@@ -136,6 +136,30 @@ func TestAuthLogin_ClientCredentialsFromEnv(t *testing.T) {
 	}
 }
 
+// TestAuthLogin_ManualWithPipedInput は、手動方式で Client ID・Client Secret・認可コードを
+// まとめて標準入力から渡しても、それぞれを正しく読み込めることを検証します。
+func TestAuthLogin_ManualWithPipedInput(t *testing.T) {
+	t.Setenv("FREEE_HR_CLIENT_ID", "")
+	t.Setenv("FREEE_HR_CLIENT_SECRET", "")
+	env := newTestEnv(t, meHandler(t))
+	var forms []url.Values
+	setupLogin(t, env, 123, &forms)
+	env.app.OpenBrowser = func(string) error { return nil }
+	env.app.Stdin = strings.NewReader("入力したクライアントID\n入力したシークレット\n貼り付けた認可コード\n")
+
+	code := env.app.Execute([]string{"auth", "login", "--manual"})
+	if code != 0 {
+		t.Fatalf("終了コード = %d, stderr=%s", code, env.stderr.String())
+	}
+	if len(forms) != 1 {
+		t.Fatalf("トークン要求の回数 = %d, 期待値 = 1", len(forms))
+	}
+	form := forms[0]
+	if form.Get("client_id") != "入力したクライアントID" || form.Get("client_secret") != "入力したシークレット" || form.Get("code") != "貼り付けた認可コード" {
+		t.Errorf("トークン要求のフォーム = %v", form)
+	}
+}
+
 // TestAuthLogin_MissingClientCredentials は、クライアント情報がどこからも得られない場合に終了コード2で止まることを検証します。
 func TestAuthLogin_MissingClientCredentials(t *testing.T) {
 	t.Setenv("FREEE_HR_CLIENT_ID", "")
