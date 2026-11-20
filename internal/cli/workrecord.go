@@ -2,6 +2,7 @@
 //
 //   - get <YYYY-MM-DD>:  日ごとの勤怠記録を表示します
 //   - summary <YYYY-MM>: 月の集計（労働時間・残業・有給の残りなど）を表示します。年月は給与支払い年月です
+//   - update <YYYY-MM-DD>: 日ごとの勤怠記録を登録・更新します（workrecord_update.go）
 package cli
 
 import (
@@ -11,9 +12,10 @@ import (
 )
 
 func (a *App) newWorkRecordCmd(flags *globalFlags) *cobra.Command {
-	cmd := newGroupCmd("work-record", "勤怠の記録（日ごとの勤怠・月の集計）")
+	cmd := newGroupCmd("work-record", "勤怠の記録（日ごとの勤怠・月の集計・勤怠の修正）")
 	cmd.AddCommand(a.newWorkRecordGetCmd(flags))
 	cmd.AddCommand(a.newWorkRecordSummaryCmd(flags))
+	cmd.AddCommand(a.newWorkRecordUpdateCmd(flags))
 	return cmd
 }
 
