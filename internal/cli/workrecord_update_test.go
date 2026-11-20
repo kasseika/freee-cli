@@ -201,6 +201,21 @@ func TestWorkRecordUpdate_FileWithBreaksNeedsNoBreakFlag(t *testing.T) {
 	}
 }
 
+// TestWorkRecordUpdate_FileSegmentsWithNoBreakFlag は、ファイルの出退勤に --no-break を組み合わせれば送れることを検証します。
+func TestWorkRecordUpdate_FileSegmentsWithNoBreakFlag(t *testing.T) {
+	env := newTestEnv(t, nil)
+	env.saveLoggedIn(t, "default", false)
+	env.app.Stdin = strings.NewReader(`{"work_record_segments": [{"clock_in_at": "2026-11-20 09:00:00", "clock_out_at": "2026-11-20 18:00:00"}]}` + "\n\n")
+
+	code := env.app.Execute([]string{"work-record", "update", "2026-11-20", "--file", "-", "--no-break", "--dry-run"})
+	if code != 0 {
+		t.Fatalf("終了コード = %d, stderr=%s", code, env.stderr.String())
+	}
+	if got := segmentsOf(t, dryRunBody(t, env.stdout.Bytes())["break_records"]); len(got) != 0 {
+		t.Errorf("休憩 = %v, 期待値 = 空のリスト", got)
+	}
+}
+
 // TestWorkRecordUpdate_SafetyGuards は、打刻と同じ安全策（確認・読み取り専用）を通ることを検証します。
 func TestWorkRecordUpdate_SafetyGuards(t *testing.T) {
 	args := []string{"work-record", "update", "2026-11-20", "--clock-in", "09:00", "--clock-out", "18:00", "--no-break"}
@@ -246,6 +261,9 @@ func TestWorkRecordUpdate_UsageErrors(t *testing.T) {
 	otherCompany := write("別の事業所.json", `{"company_id": 999, "note": "別の事業所のメモ"}`)
 	notJSON := write("壊れた.json", `{"note": `)
 	notObject := write("配列.json", `[{"note": "配列"}]`)
+	twoObjects := write("2つのオブジェクト.json", `{"note": "1つ目"} {"note": "2つ目"}`)
+	segmentsWithoutBreaks := write("休憩なしの出退勤.json", `{"work_record_segments": [{"clock_in_at": "2026-11-20 09:00:00", "clock_out_at": "2026-11-20 18:00:00"}]}`)
+	legacyTimesWithoutBreaks := write("旧形式の出退勤.json", `{"clock_in_at": "2026-11-20 09:00:00", "clock_out_at": "2026-11-20 18:00:00"}`)
 
 	cases := []struct {
 		name string
@@ -265,6 +283,9 @@ func TestWorkRecordUpdate_UsageErrors(t *testing.T) {
 		{"ファイルが JSON ではない", []string{"--file", notJSON}},
 		{"ファイルがオブジェクトではない", []string{"--file", notObject}},
 		{"ファイルが存在しない", []string{"--file", filepath.Join(dir, "存在しない.json")}},
+		{"ファイルの後ろに別の JSON が続く", []string{"--file", twoObjects}},
+		{"ファイルの出退勤に休憩の指定が無い", []string{"--file", segmentsWithoutBreaks}},
+		{"ファイルの旧形式の出退勤に休憩の指定が無い", []string{"--file", legacyTimesWithoutBreaks}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -9,13 +9,14 @@
 // ファイルの値より優先します。company_id は常にプロファイルの事業所にします。
 //
 // 休憩を省いて更新した場合に既存の休憩が消えるかどうかは API のドキュメントに無いため、
-// 出退勤を指定するときは、休憩（--break・--no-break・ファイルの break_records）の指定を必須にします。
+// 出退勤を指定するときは（フラグ・ファイルのどちらでも）、休憩（--break・--no-break・ファイルの break_records）の指定を必須にします。
 // 書き込みの安全策（--dry-run・確認・読み取り専用）は打刻と同じ仕組み（write.go）を通ります。
 package cli
 
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -123,10 +124,6 @@ func (a *App) buildWorkRecordUpdateBody(cmd *cobra.Command, date string, f *work
 			return nil, usageErrorf("--clock-out は --clock-in より後にしてください。日をまたぐ退勤は \"YYYY-MM-DD HH:MM\" の形で日付も指定してください")
 		}
 		body["work_record_segments"] = []timeRange{{ClockInAt: in.Format(apiDateTimeLayout), ClockOutAt: out.Format(apiDateTimeLayout)}}
-		_, fileHasBreaks := body["break_records"]
-		if len(f.breaks) == 0 && !f.noBreak && !fileHasBreaks {
-			return nil, usageErrorf("出退勤を指定するときは、休憩を --break HH:MM-HH:MM か --no-break で指定してください（省略すると既存の休憩がどうなるかが API で定められていないため）")
-		}
 	}
 
 	if len(f.breaks) > 0 {
@@ -147,10 +144,27 @@ func (a *App) buildWorkRecordUpdateBody(cmd *cobra.Command, date string, f *work
 		body["note"] = f.note
 	}
 
+	// フラグ・ファイルのどちらで出退勤を指定した場合も、休憩の指定を必須にする（旧形式の clock_in_at・clock_out_at を含む）
+	if hasWorkTimes(body) {
+		if _, ok := body["break_records"]; !ok {
+			return nil, usageErrorf("出退勤を指定するときは、休憩を --break HH:MM-HH:MM か --no-break（ファイルでは break_records）で指定してください（省略すると既存の休憩がどうなるかが API で定められていないため）")
+		}
+	}
+
 	if len(body) == 0 {
 		return nil, usageErrorf("更新する内容を、--clock-in/--clock-out・--break・--no-break・--note・--file のいずれかで指定してください")
 	}
 	return body, nil
+}
+
+// hasWorkTimes は、本文に出退勤の指定（work_record_segments、または旧形式の clock_in_at・clock_out_at）があるかを返します。
+func hasWorkTimes(body map[string]any) bool {
+	for _, key := range []string{"work_record_segments", "clock_in_at", "clock_out_at"} {
+		if _, ok := body[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // timeRange は出退勤・休憩の1区間です（API の work_record_segments・break_records の要素）。
@@ -203,7 +217,7 @@ func parseBreakTime(date, hhmm, original string) (time.Time, error) {
 	return t, nil
 }
 
-// readJSONObject は path（"-" の場合は標準入力）から JSON オブジェクトを読み込みます。
+// readJSONObject は path（"-" の場合は標準入力）から JSON オブジェクトを1つ読み込みます。
 // 数値は桁を失わないよう json.Number のまま保持します。読めない・JSON オブジェクトでない場合は使い方の誤りにします。
 func readJSONObject(stdin io.Reader, path string) (map[string]any, error) {
 	var data []byte
@@ -221,6 +235,11 @@ func readJSONObject(stdin io.Reader, path string) (map[string]any, error) {
 	var obj map[string]any
 	if err := dec.Decode(&obj); err != nil || obj == nil {
 		return nil, usageErrorf("--file は JSON オブジェクトにしてください（%s）", describeJSONError(err))
+	}
+	// 2つ目の値を黙って捨てないよう、オブジェクトの後ろは空白だけであることを確かめる
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, usageErrorf("--file には JSON オブジェクトを1つだけ書いてください（オブジェクトの後ろに別の内容があります）")
 	}
 	return obj, nil
 }

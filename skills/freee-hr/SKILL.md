@@ -98,7 +98,7 @@ freee-hr work-record update 2026-11-20 --clock-in 09:00 --clock-out 18:00 --brea
 freee-hr work-record update 2026-11-20 --clock-in 18:00 --clock-out "2026-11-21 02:00" --no-break --dry-run
 ```
 
-- 出退勤（`--clock-in` と `--clock-out` は両方）を指定するときは、休憩を `--break HH:MM-HH:MM`（複数可）か `--no-break` で必ず指定する。既存の休憩を残したい場合も、`work-record get` で確かめた休憩を `--break` で指定し直す
+- 出退勤（`--clock-in` と `--clock-out` は両方、または `--file` の `work_record_segments`）を指定するときは、休憩を `--break HH:MM-HH:MM`（複数可）・`--no-break`・`--file` の `break_records` のいずれかで必ず指定する。既存の休憩を残したい場合も、`work-record get` で確かめた休憩を `--break` で指定し直す
 - 休暇（有給の半休など）や複数の出退勤は、API の本文の形の JSON を `--file` で渡す（`-` で標準入力。日時は `YYYY-MM-DD HH:MM:SS`）。フラグで指定した項目はファイルより優先される。`company_id` は自動で入る
 - `--file -` で標準入力を使う場合は確認プロンプトに答えられないため、dry-run でユーザーの了承を得てから `--yes` を付ける
 - 振替出勤・振替休日・代休出勤・代休は API では登録できない
