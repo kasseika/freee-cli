@@ -6,6 +6,9 @@
 package cli
 
 import (
+	"errors"
+	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -17,6 +20,19 @@ const (
 	// timeClockListMaxLimit は打刻一覧で一度に取得できる件数の上限です（API の仕様）。
 	timeClockListMaxLimit = 100
 )
+
+// withPunchHint は、打刻が 400 で拒否された場合に、いま打刻できる種類の確かめ方を案内に加えます。
+//
+// freee は、その時点で打刻できない種類（出勤済みなのに出勤、出勤前に退勤など）を 400 で拒否します。
+// 400 には入社日より前の日付など別の原因もあるため、条件付きの案内にとどめます。
+// 元のエラーは %w で包むため、終了コード（4）は変わりません。
+func withPunchHint(err error) error {
+	var apiErr *freeehr.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest {
+		return fmt.Errorf("%w\n打刻の種類が合わない場合（出勤済みなのに出勤など）は、`freee-hr timeclock types` で、いま打刻できる種類を確かめてください", err)
+	}
+	return err
+}
 
 func (a *App) newTimeclockCmd(flags *globalFlags) *cobra.Command {
 	cmd := newGroupCmd("timeclock", "打刻（出勤・退勤・休憩開始・休憩終了）")
@@ -122,7 +138,7 @@ func (a *App) newTimeclockPunchCmd(flags *globalFlags) *cobra.Command {
 				return err
 			}
 			req := freeehr.PunchRequest(s.employeeID, freeehr.PunchBody{CompanyID: s.creds.CompanyID, Type: punchType, BaseDate: baseDate})
-			return a.sendWrite(cmd.Context(), flags, s, &wf, req)
+			return withPunchHint(a.sendWrite(cmd.Context(), flags, s, &wf, req))
 		},
 	}
 	addEmployeeIDFlag(cmd, &employeeID)

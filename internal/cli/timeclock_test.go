@@ -292,4 +292,25 @@ func TestTimeclockPunch_APIError(t *testing.T) {
 	if !strings.Contains(env.stderr.String(), "打刻の種類が正しくありません。") {
 		t.Errorf("API のエラー内容が表示されていません: %s", env.stderr.String())
 	}
+	// 検証: 拒否の多くは「いまは打刻できない種類」（出勤済みなのに出勤など）なので、確かめ方を案内する
+	if !strings.Contains(env.stderr.String(), "freee-hr timeclock types") {
+		t.Errorf("打刻できる種類の確かめ方が案内されていません: %s", env.stderr.String())
+	}
+}
+
+// TestTimeclockPunch_ForbiddenHasNoTypesHint は、権限不足（403）など 400 以外の拒否では、
+// 打刻の種類の案内を出さないことを検証します（原因が種類ではないため）。
+func TestTimeclockPunch_ForbiddenHasNoTypesHint(t *testing.T) {
+	var requests []recordedRequest
+	env := newTestEnv(t, recordingAPI(t, http.StatusForbidden,
+		`{"status_code":403,"errors":[{"type":"forbidden","messages":["アクセスする権限がありません。"]}]}`, &requests))
+	env.saveLoggedIn(t, "default", false)
+
+	code := env.app.Execute([]string{"timeclock", "punch", "clock_in", "--yes"})
+	if code != 4 {
+		t.Fatalf("終了コード = %d, 期待値 = 4", code)
+	}
+	if strings.Contains(env.stderr.String(), "freee-hr timeclock types") {
+		t.Errorf("400 以外では打刻の種類の案内を出さない必要があります: %s", env.stderr.String())
+	}
 }
