@@ -5,7 +5,7 @@
 //  1. --dry-run: API を呼ばず、送る予定のリクエストを JSON で標準出力に書いて終了コード0で終わります。
 //  2. 読み取り専用のプロファイル（auth login --read-only）では、送信を拒否します（終了コード2）。
 //  3. --yes が無い場合は、送る予定の内容を標準エラー出力に示して [y/N] で確認します。
-//     y / yes 以外の答え、または標準入力が無い場合（Claude Code の Bash など）は送信せず、終了コード2で終わります。
+//     改行で終わる y / yes 以外の答え、または標準入力が無い場合（Claude Code の Bash など）は送信せず、終了コード2で終わります。
 //
 // 送信したリクエストは自動で再試行しません（打刻などを二重に登録しないため）。
 package cli
@@ -92,7 +92,7 @@ func (a *App) sendWrite(ctx context.Context, flags *globalFlags, s *session, wf 
 }
 
 // confirmWrite は送る予定の内容を標準エラー出力に示し、標準入力から [y/N] の答えを読みます。
-// 入力の終わり（EOF）は「いいえ」として扱います。
+// 改行で終わる y / yes だけを「はい」とし、入力の終わり（EOF）は途中まで入力があっても「いいえ」として扱います。
 func (a *App) confirmWrite(plan writePlan) (bool, error) {
 	var buf bytes.Buffer
 	if err := writeJSON(&buf, plan); err != nil {
@@ -102,12 +102,14 @@ func (a *App) confirmWrite(plan writePlan) (bool, error) {
 	_, _ = fmt.Fprint(a.Stderr, "この内容で送信しますか？ [y/N]: ")
 
 	line, err := bufio.NewReader(a.Stdin).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return false, fmt.Errorf("確認の入力の読み込みに失敗しました: %w", err)
-	}
-	if errors.Is(err, io.EOF) && line == "" {
-		// 標準入力が無い場合、プロンプトの後ろで改行してからエラーを表示する
+	if errors.Is(err, io.EOF) {
+		// 改行で終わらない入力（標準入力が無い・入力が途中で切れた）は、答えが確定していないため「いいえ」とする。
+		// プロンプトの後ろで改行してから、呼び出し元がエラーを表示する
 		_, _ = fmt.Fprintln(a.Stderr)
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("確認の入力の読み込みに失敗しました: %w", err)
 	}
 	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer == "y" || answer == "yes", nil

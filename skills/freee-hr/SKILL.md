@@ -72,7 +72,7 @@ freee-hr timeclock list --from 2026-11-01 --to 2026-11-20
 # 指定日の勤怠記録（出退勤時刻・休憩・労働時間など）
 freee-hr work-record get 2026-11-20
 
-# 月の集計（分単位の労働時間・残業・深夜・有給の残りなど）
+# 給与支払い年月が 2026-11 の集計（分単位の労働時間・残業・深夜・有給の残りなど）
 freee-hr work-record summary 2026-11
 
 # 日ごとの勤怠記録も含める
@@ -80,6 +80,8 @@ freee-hr work-record summary 2026-11 --with-records
 ```
 
 時間はすべて分単位です（例: `total_work_mins`）。
+
+`summary` の年月は**給与支払い年月**です（カレンダーの月ではありません）。給与を翌月に支払う事業所では、`2026-11` が10月分の勤怠を指すことがあります。ユーザーに結果を伝えるときは、レスポンスの `start_date`・`end_date`（実際の集計期間）を必ず添えてください。ユーザーが「11月の勤怠」と言った場合は、`start_date` と `end_date` が11月を含むかを確かめ、違えば前後の年月で取り直してください。
 
 ## 対象の従業員
 
@@ -104,8 +106,8 @@ freee-hr auth status | jq '{company_id, employee_id}'
 # 所属する事業所の名前と自分の従業員ID
 freee-hr user me | jq '.companies[] | {name, employee_id}'
 
-# 今月の総労働時間と残業時間（時間に換算）
-freee-hr work-record summary 2026-11 | jq '{work_hours: (.total_work_mins / 60), overtime_hours: (.total_overtime_except_normal_work_mins / 60)}'
+# 給与支払い年月 2026-11 の集計期間と、総労働時間・時間外労働時間（時間に換算）
+freee-hr work-record summary 2026-11 | jq '{start_date, end_date, work_hours: (.total_work_mins / 60), overtime_hours: (.total_overtime_except_normal_work_mins / 60)}'
 
 # 今日の打刻の種類と時刻
 freee-hr timeclock list --from 2026-11-20 --to 2026-11-20 | jq -r '.[] | "\(.type) \(.datetime)"'

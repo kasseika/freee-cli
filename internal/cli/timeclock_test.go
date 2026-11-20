@@ -241,6 +241,7 @@ func TestTimeclockPunch_Confirm(t *testing.T) {
 		{"yes と答える", "yes\n", 0, 1},
 		{"n と答える", "n\n", 2, 0},
 		{"何も入力せず Enter", "\n", 2, 0},
+		{"改行の無い yes（入力が途中で終わった）", "yes", 2, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

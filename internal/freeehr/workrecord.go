@@ -18,7 +18,8 @@ func WorkRecordRequest(companyID, employeeID int, date string) Request {
 	}
 }
 
-// WorkRecordSummaryRequest は指定した年月の勤怠の月次集計を取得するリクエストを返します。
+// WorkRecordSummaryRequest は、給与支払い年月（year・month）を指定して勤怠の月次集計を取得するリクエストを返します。
+// 実際の集計期間はレスポンスの start_date・end_date で表されます。
 // withRecords が true の場合は、日ごとの勤怠記録も一緒に取得します。
 func WorkRecordSummaryRequest(companyID, employeeID, year, month int, withRecords bool) Request {
 	q := companyQuery(companyID)

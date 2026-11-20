@@ -103,6 +103,8 @@ freee-hr work-record get 2026-11-20
 freee-hr work-record summary 2026-11
 ```
 
+`work-record summary` の年月は **給与支払い年月** です（freee の API の仕様）。給与を翌月に支払う事業所では、`2026-11` が10月分の勤怠を指すことがあります。実際の集計期間はレスポンスの `start_date`・`end_date` で確認してください。
+
 ### 書き込み系コマンドの安全策
 
 freee の会社データに書き込むコマンド（現在は `timeclock punch`）は、次の順に安全策を通ります。
@@ -112,18 +114,22 @@ freee の会社データに書き込むコマンド（現在は `timeclock punch
 3. `--yes` が無い場合は、送る予定の内容を表示して `[y/N]` で確認します。`y` 以外の答え、または標準入力が無い場合は送信しません（終了コード2）。
 4. 送信に失敗しても自動で再試行しません（二重の打刻を防ぐため）。
 
-Claude Code から使う場合は、プロジェクトの `.claude/settings.json` で書き込み系コマンドを `ask` にしておくと、Claude Code が `--yes` を付けて実行しようとしても、そのたびに人の確認が入ります（[権限の設定](https://code.claude.com/docs/en/permissions)。`ask` は `allow` より優先されます）。グローバルフラグをサブコマンドの前に書いた場合にも一致するよう、2通りの形を並べます。
+Claude Code から使う場合は、プロジェクトの `.claude/settings.json` で書き込み系コマンドを `ask` にしておくと、Claude Code が `--yes` を付けて実行しようとしても、人の確認が入ります（[権限の設定](https://code.claude.com/docs/en/permissions)。`ask` は `allow` より優先されます）。グローバルフラグをサブコマンドの前に書いた場合と、カレントディレクトリでビルドしたバイナリ（`./freee-hr`）を使う場合にも一致するよう、4通りの形を並べます。
 
 ```json
 {
   "permissions": {
     "ask": [
       "Bash(freee-hr timeclock punch *)",
-      "Bash(freee-hr * timeclock punch *)"
+      "Bash(freee-hr * timeclock punch *)",
+      "Bash(./freee-hr timeclock punch *)",
+      "Bash(./freee-hr * timeclock punch *)"
     ]
   }
 }
 ```
+
+この設定はコマンドの文字列に対する一致で判定されるため、絶対パス（`/usr/local/bin/freee-hr` など）や `sh -c '...'` 経由の呼び出しには一致しません。`freee-hr` は PATH の通った場所にインストールし、コマンド名だけで呼び出してください（Skill もその前提で書かれています）。CLI 側の確認（`--yes` が無ければ送信しない）は、呼び出し方に関わらず働きます。
 
 ### 出力と終了コード
 
