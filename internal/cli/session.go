@@ -35,17 +35,28 @@ func (a *App) openEmployeeSession(cmd *cobra.Command, flags *globalFlags, employ
 	if explicit && employeeID <= 0 {
 		return nil, usageErrorf("--%s には1以上の従業員IDを指定してください: %d", employeeIDFlag, employeeID)
 	}
-	client, creds, err := a.newClient(flags.profile)
+	s, err := a.openCompanySession(flags)
 	if err != nil {
 		return nil, err
 	}
 	if !explicit {
-		if creds.EmployeeID == nil {
-			return nil, usageErrorf("ログインユーザーは事業所「%s」に従業員として登録されていません。--%s で対象の従業員を指定してください", creds.CompanyName, employeeIDFlag)
+		if s.creds.EmployeeID == nil {
+			return nil, usageErrorf("ログインユーザーは事業所「%s」に従業員として登録されていません。--%s で対象の従業員を指定してください", s.creds.CompanyName, employeeIDFlag)
 		}
-		employeeID = *creds.EmployeeID
+		employeeID = *s.creds.EmployeeID
 	}
-	return &session{profile: flags.profile, client: client, creds: creds, employeeID: employeeID}, nil
+	s.employeeID = employeeID
+	return s, nil
+}
+
+// openCompanySession は、従業員を使わないコマンド（申請経路・申請の一覧など）のために、事業所だけを確定させた session を返します。
+// employeeID は 0 のままです。
+func (a *App) openCompanySession(flags *globalFlags) (*session, error) {
+	client, creds, err := a.newClient(flags.profile)
+	if err != nil {
+		return nil, err
+	}
+	return &session{profile: flags.profile, client: client, creds: creds}, nil
 }
 
 // sendRead は読み取りのリクエストを送り、API のレスポンスをそのまま JSON で出力します。
