@@ -53,3 +53,35 @@ func newGroupCmd(use, short string) *cobra.Command {
 		},
 	}
 }
+
+const (
+	// dateLayout は日付の引数・フラグの形式（YYYY-MM-DD）です。
+	dateLayout = "2006-01-02"
+	// yearMonthLayout は年月の引数の形式（YYYY-MM）です。
+	yearMonthLayout = "2006-01"
+)
+
+// parseDate は YYYY-MM-DD 形式の日付を検証し、そのまま返します。存在しない日付（2月30日など）も使い方の誤りにします。
+func parseDate(name, value string) (string, error) {
+	if _, err := time.Parse(dateLayout, value); err != nil {
+		return "", usageErrorf("%s は YYYY-MM-DD 形式の正しい日付で指定してください: %q", name, value)
+	}
+	return value, nil
+}
+
+// parseOptionalDate は、空文字列（省略）ならそのまま返し、指定があれば parseDate で検証します。
+func parseOptionalDate(name, value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	return parseDate(name, value)
+}
+
+// parseYearMonth は YYYY-MM 形式の年月を検証し、年と月を返します。
+func parseYearMonth(name, value string) (year, month int, err error) {
+	t, err := time.Parse(yearMonthLayout, value)
+	if err != nil {
+		return 0, 0, usageErrorf("%s は YYYY-MM 形式の正しい年月で指定してください: %q", name, value)
+	}
+	return t.Year(), int(t.Month()), nil
+}

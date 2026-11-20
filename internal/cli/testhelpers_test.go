@@ -71,3 +71,20 @@ func (e *testEnv) saveLoggedIn(t *testing.T, profile string, readOnly bool) {
 		t.Fatal(err)
 	}
 }
+
+// saveNotEmployee は、事業所に従業員として登録されていない（employee_id が null の）ログイン済みプロファイルを保存します。
+func (e *testEnv) saveNotEmployee(t *testing.T, profile string) {
+	t.Helper()
+	err := e.store.Save(context.Background(), profile, &auth.Credentials{
+		ClientID:     "テスト用クライアントID",
+		ClientSecret: "テスト用シークレット",
+		AccessToken:  "保存済みのアクセストークン",
+		RefreshToken: "保存済みのリフレッシュトークン",
+		Expiry:       time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC),
+		CompanyID:    123,
+		CompanyName:  "開発用テスト事業所",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
