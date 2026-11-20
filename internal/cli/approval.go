@@ -2,6 +2,7 @@
 //
 //   - route list: 申請経路の一覧（既定は勤怠申請に使える経路。--all で全種別）
 //   - route get <id>: 申請経路の詳細（承認のステップ）
+//   - <種類> list / get / create: 申請の一覧・詳細・作成（approval_request.go）
 package cli
 
 import (
@@ -15,6 +16,9 @@ import (
 func (a *App) newApprovalCmd(flags *globalFlags) *cobra.Command {
 	cmd := newGroupCmd("approval", "申請（勤怠・有給・残業など）と申請経路")
 	cmd.AddCommand(a.newApprovalRouteCmd(flags))
+	for _, k := range approvalKinds {
+		cmd.AddCommand(a.newApprovalKindCmd(flags, k))
+	}
 	return cmd
 }
 
