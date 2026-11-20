@@ -71,6 +71,14 @@ freee-hr --profile test auth logout
 
 認証情報は `~/.config/freee-hr/credentials.json`（パーミッション 0600）に保存されます。アクセストークン（有効期限6時間）は、期限が切れると自動で更新されます。リフレッシュトークン（有効期限90日）が失効した場合は、もう一度 `auth login` を実行してください。
 
+### ログインで `invalid_grant` が出る場合
+
+ブラウザで許可したあと「トークンの取得に失敗しました: oauth2: "invalid_grant" ...」と表示される場合、freee のドキュメント（[40x エラーの確認ポイント](https://developer.freee.co.jp/reference/40x-checkpoint)）では、client_id と client_secret が正しいかの確認が挙げられています。エラーには送信した `client_id`・`redirect_uri` と Client Secret の文字数が表示されるので、次を確認してください。
+
+1. Client Secret が、その Client ID のアプリのものと一致しているか（アプリ管理画面の値と文字数を比べてください）
+2. アプリ管理画面のコールバックURLが、表示された `redirect_uri`（既定は `http://localhost:8765/callback`）と完全に一致し、保存されているか
+3. ブラウザで許可してから、すぐにログインを完了したか（認可コードは1回しか使えません）
+
 ### 出力と終了コード
 
 出力は常に JSON です。エラーは標準エラー出力に `エラー: ...` の形で書き込みます。

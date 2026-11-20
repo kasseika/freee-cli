@@ -324,6 +324,50 @@ func TestLogin_ManualTimeout(t *testing.T) {
 	}
 }
 
+// TestLogin_InvalidGrantDiagnostics は、トークンエンドポイントが invalid_grant を返したとき、
+// 原因の切り分けに使う情報（送った client_id・redirect_uri・シークレットの文字数）をエラーに含め、
+// シークレットそのものは含めないことを検証します。
+func TestLogin_InvalidGrantDiagnostics(t *testing.T) {
+	// 前提: freee がトークン要求を invalid_grant で拒否する（シークレットの誤りなど）
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"指定された認可グラントは不正か、有効期限切れか、無効か、リダイレクトURIが異なるか、もしくは別のクライアントに適用されています。"}`))
+	}))
+	t.Cleanup(tokenServer.Close)
+
+	var redirectURI string
+	openBrowser := func(raw string) error {
+		u, _ := url.Parse(raw)
+		q := u.Query()
+		redirectURI = q.Get("redirect_uri")
+		go func() {
+			if resp, err := http.Get(q.Get("redirect_uri") + "?code=" + url.QueryEscape("認可コード") + "&state=" + url.QueryEscape(q.Get("state"))); err == nil {
+				_ = resp.Body.Close()
+			}
+		}()
+		return nil
+	}
+
+	_, err := Login(context.Background(), LoginOptions{
+		ClientID: "テスト用クライアントID", ClientSecret: "テスト用のシークレット値",
+		AuthURL: "https://accounts.example.test/public_api/authorize", TokenURL: tokenServer.URL,
+		OpenBrowser: openBrowser, Stdin: strings.NewReader(""), Stderr: &bytes.Buffer{}, Timeout: 5 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("invalid_grant なのにログインが成功しました")
+	}
+	msg := err.Error()
+	for _, want := range []string{"invalid_grant", "client_id=テスト用クライアントID", "redirect_uri=" + redirectURI, "12文字"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("エラーに %q が含まれていません: %s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "テスト用のシークレット値") {
+		t.Errorf("エラーにシークレットそのものを含めてはいけません: %s", msg)
+	}
+}
+
 // TestLogin_MissingClientCredentials は、クライアントIDまたはシークレットが無い場合に失敗することを検証します。
 func TestLogin_MissingClientCredentials(t *testing.T) {
 	_, err := Login(context.Background(), LoginOptions{ClientID: "テスト用クライアントID", Stderr: &bytes.Buffer{}})

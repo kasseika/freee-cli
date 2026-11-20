@@ -55,6 +55,9 @@ func (a *App) newAuthLoginCmd(flags *globalFlags) *cobra.Command {
 			if clientSecret == "" {
 				clientSecret = os.Getenv(envClientSecret)
 			}
+			// コピー＆ペーストで紛れ込みやすい前後の空白・改行を除く（freee の Client ID・Secret は空白を含まない）
+			clientID = strings.TrimSpace(clientID)
+			clientSecret = strings.TrimSpace(clientSecret)
 			// 対話入力と、手動方式の認可コードの読み込みで同じリーダーを使う。
 			// 別々にバッファリングすると、先に読んだ側がまとめて読み進め、認可コードの行を失うためである。
 			stdin := bufio.NewReader(a.Stdin)

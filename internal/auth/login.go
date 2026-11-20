@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/oauth2"
 )
@@ -139,11 +140,7 @@ func loginManual(ctx context.Context, config *oauth2.Config, opts LoginOptions) 
 	if code == "" {
 		return nil, errors.New("認可コードが入力されませんでした")
 	}
-	token, err := config.Exchange(ctx, code)
-	if err != nil {
-		return nil, fmt.Errorf("トークンの取得に失敗しました: %w", err)
-	}
-	return token, nil
+	return exchange(ctx, config, code)
 }
 
 // readLine は r から1行を読み、前後の空白を除いて返します。
@@ -223,11 +220,7 @@ func loginLoopback(ctx context.Context, config *oauth2.Config, opts LoginOptions
 		if res.err != nil {
 			return nil, res.err
 		}
-		token, err := config.Exchange(ctx, res.code)
-		if err != nil {
-			return nil, fmt.Errorf("トークンの取得に失敗しました: %w", err)
-		}
-		return token, nil
+		return exchange(ctx, config, res.code)
 	case <-ctx.Done():
 		return nil, fmt.Errorf("認証がタイムアウトしました。もう一度 `freee-hr auth login` を実行してください: %w", ctx.Err())
 	}
@@ -252,6 +245,29 @@ func handleCallback(w http.ResponseWriter, r *http.Request, expectedState string
 	}
 	_, _ = fmt.Fprintln(w, "認証が完了しました。このタブを閉じて構いません。")
 	return loginCallbackResult{code: code}, true
+}
+
+// exchange は認可コードをトークンと交換します。
+//
+// freee が invalid_grant を返した場合は、原因（シークレットの誤り・コールバックURLの不一致・
+// 認可コードの期限切れや二重使用）を利用者が切り分けられるよう、送った client_id・redirect_uri と
+// シークレットの文字数をエラーに含めます。シークレットそのものは含めません。
+func exchange(ctx context.Context, config *oauth2.Config, code string) (*oauth2.Token, error) {
+	token, err := config.Exchange(ctx, code)
+	if err == nil {
+		return token, nil
+	}
+	var retrieveErr *oauth2.RetrieveError
+	if errors.As(err, &retrieveErr) && retrieveErr.ErrorCode == "invalid_grant" {
+		return nil, fmt.Errorf("トークンの取得に失敗しました: %w\n"+
+			"送信した値: client_id=%s / redirect_uri=%s / client_secret は%d文字\n"+
+			"次を確認してください:\n"+
+			"  - Client Secret が、この Client ID のアプリのものと一致しているか（文字数をアプリ管理画面の値と比べてください）\n"+
+			"  - アプリ管理画面のコールバックURLが redirect_uri と完全に一致し、保存されているか\n"+
+			"  - ブラウザで許可してからすぐにログインを完了したか（認可コードは1回しか使えません）",
+			err, config.ClientID, config.RedirectURL, utf8.RuneCountInString(config.ClientSecret))
+	}
+	return nil, fmt.Errorf("トークンの取得に失敗しました: %w", err)
 }
 
 // randomState は CSRF 対策用のランダムな state 値を生成します。

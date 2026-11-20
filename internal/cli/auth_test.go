@@ -160,6 +160,24 @@ func TestAuthLogin_ManualWithPipedInput(t *testing.T) {
 	}
 }
 
+// TestAuthLogin_TrimsClientCredentials は、環境変数のクライアント情報の前後にある空白・改行
+// （コピー＆ペーストで紛れ込みやすい）を取り除いてからトークンを要求することを検証します。
+func TestAuthLogin_TrimsClientCredentials(t *testing.T) {
+	t.Setenv("FREEE_HR_CLIENT_ID", " 環境変数のクライアントID\n")
+	t.Setenv("FREEE_HR_CLIENT_SECRET", "環境変数のシークレット \r\n")
+	env := newTestEnv(t, meHandler(t))
+	var forms []url.Values
+	setupLogin(t, env, 123, &forms)
+
+	code := env.app.Execute([]string{"auth", "login", "--port", "0"})
+	if code != 0 {
+		t.Fatalf("終了コード = %d, stderr=%s", code, env.stderr.String())
+	}
+	if len(forms) != 1 || forms[0].Get("client_id") != "環境変数のクライアントID" || forms[0].Get("client_secret") != "環境変数のシークレット" {
+		t.Errorf("トークン要求のクライアント情報 = %q", forms)
+	}
+}
+
 // TestAuthLogin_MissingClientCredentials は、クライアント情報がどこからも得られない場合に終了コード2で止まることを検証します。
 func TestAuthLogin_MissingClientCredentials(t *testing.T) {
 	t.Setenv("FREEE_HR_CLIENT_ID", "")
