@@ -138,7 +138,7 @@ freee-hr approval paid-holiday list --status in_progress | jq '.paid_holidays[] 
 
 - `--approver-id` と `--applicant-id` は**ユーザーID**であり、従業員ID（`--employee-id`）ではない。ユーザーに承認者を確かめずに `--approver-id` を決めない
 - 特別休暇申請の `--setting-id`（特別休暇設定ID）は推測しない。分からない場合はユーザーに確認する
-- 残業申請で `should_reflect_in_work_record` が `true` の場合は `--overtime-start`/`--overtime-end`（開始は所定の退勤時刻 `end_at` と同じ）か `--early-start`/`--early-end`（終了は所定の出勤時刻 `start_at` と同じ）、`false` の場合は `--start`/`--end` を使う
+- 残業申請で `should_reflect_in_work_record` が `true` の場合は `--overtime-start`/`--overtime-end`（開始は所定の退勤時刻 `end_at` と同じ）か `--early-start`/`--early-end`（終了は所定の出勤時刻 `start_at` と同じ）、`false` の場合は `--start`/`--end` を使う。反映する設定で `--start`/`--end` だけを指定すると、CLI は送信せずに終了コード2で止める（取り消し申請になるのを防ぐため）
 - フラグに無い項目（遅刻・早退の分数など）は API の本文の形の JSON を `--file` で渡す
 - 申請の更新・取り下げ・承認はこの CLI ではできない。freee の画面での操作を案内する
 - 申請の作成の 400 は、freee のエラーの文面をそのままユーザーに伝える。「勤怠申請を有効にしてください」の場合は、事業所の設定で勤怠申請の機能が無効になっている。CLI からは有効にできないので、事業所の管理者に freee人事労務の設定で有効にしてもらうよう案内し、有効になったと答えるまで再実行しない

@@ -162,7 +162,7 @@ freee-hr approval paid-holiday list --status in_progress --from 2026-12-01 --to 
 freee-hr approval paid-holiday get 77
 ```
 
-- 残業申請は、`overtime-work setting` の `should_reflect_in_work_record` が `true`（勤怠に反映する）なら `--overtime-start`/`--overtime-end`・`--early-start`/`--early-end` を、`false` なら `--start`/`--end` を指定します。反映する設定では、残業の開始は所定の退勤時刻、早出の終了は所定の出勤時刻と同じにします。
+- 残業申請は、`overtime-work setting` の `should_reflect_in_work_record` が `true`（勤怠に反映する）なら `--overtime-start`/`--overtime-end`・`--early-start`/`--early-end` を、`false` なら `--start`/`--end` を指定します。反映する設定では、残業の開始は所定の退勤時刻、早出の終了は所定の出勤時刻と同じにします。`--start`/`--end` だけを指定した場合は、CLI が送信の前（`--dry-run` でも）に設定を取得し、反映する設定なら送信しません（反映する設定で早出・残業の時刻が無い申請は、対象日の承認済み残業申請をすべて取り消す申請になるため）。
 - フラグに無い項目（遅刻・早退の分数、日をまたぐ時刻、勤怠に反映する設定での残業申請の取り消しなど）は、`--file` に [申請の作成 API](https://developer.freee.co.jp/reference/hr/reference) の本文と同じ形の JSON を指定します。フラグの値が優先され、`company_id` は自動で入ります。
 - 部門役職データ連携を使う申請経路（役職指定・部門および役職指定）は、API では参照だけができ、申請の作成には使えません。
 - 申請の更新・取り下げ・承認は v0.1 では対応していません。freee の画面で操作してください。

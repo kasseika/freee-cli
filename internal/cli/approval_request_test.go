@@ -240,8 +240,6 @@ func TestApprovalOvertimeWorkCreate_DryRun(t *testing.T) {
 			map[string]any{"overtime_work_start_at": "18:00", "overtime_work_end_at": "20:00"}},
 		{"勤怠に反映する早出", []string{"--early-start", "07:00", "--early-end", "09:00"},
 			map[string]any{"early_work_start_at": "07:00", "early_work_end_at": "09:00"}},
-		{"勤怠に反映しない残業", []string{"--start", "18:00", "--end", "21:00"},
-			map[string]any{"start_at": "18:00", "end_at": "21:00"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -427,5 +425,134 @@ func TestApprovalCreate_FileCompanyMismatch(t *testing.T) {
 	code := env.app.Execute([]string{"approval", "monthly-attendance", "create", "2026-11", "--route-id", testRouteID, "--file", path, "--dry-run"})
 	if code != 2 {
 		t.Fatalf("終了コード = %d, 期待値 = 2", code)
+	}
+}
+
+// writeRequestFile は、--file に渡す JSON を一時ファイルに書き、そのパスを返します。
+func writeRequestFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "request.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestApprovalOvertimeWorkCreate_NotReflecting は、勤怠に反映しない設定の事業所では、
+// --start/--end だけの残業申請を作れることを検証します（設定は送信の前に API で確かめます）。
+func TestApprovalOvertimeWorkCreate_NotReflecting(t *testing.T) {
+	var requests []recordedRequest
+	env := newTestEnv(t, recordingAPI(t, http.StatusOK, `{"should_reflect_in_work_record":false}`, &requests))
+	env.saveLoggedIn(t, "default", false)
+
+	code := env.app.Execute([]string{"approval", "overtime-work", "create", "2026-11-20", "--start", "18:00", "--end", "21:00", "--route-id", testRouteID, "--dry-run"})
+	if code != 0 {
+		t.Fatalf("終了コード = %d, stderr=%s", code, env.stderr.String())
+	}
+	_, body := approvalDryRunBody(t, env.stdout.Bytes())
+	if body["start_at"] != "18:00" || body["end_at"] != "21:00" {
+		t.Errorf("本文 = %v", body)
+	}
+	// 送信は dry-run のため行わず、設定の取得（GET）だけを行う
+	if len(requests) != 1 || requests[0].method != http.MethodGet || requests[0].path != "/api/v1/approval_requests/overtime_works/setting" || requests[0].query["date"] != "2026-11-20" {
+		t.Errorf("リクエスト = %+v", requests)
+	}
+}
+
+// TestApprovalOvertimeWorkCreate_ReflectingRejectsStartEnd は、勤怠に反映する設定の事業所で --start/--end だけを送ると
+// 対象日の承認済み残業申請がすべて取り消されるため、送らずに終了コード2にすることを検証します。
+func TestApprovalOvertimeWorkCreate_ReflectingRejectsStartEnd(t *testing.T) {
+	var requests []recordedRequest
+	env := newTestEnv(t, recordingAPI(t, http.StatusOK, `{"should_reflect_in_work_record":true}`, &requests))
+	env.saveLoggedIn(t, "default", false)
+
+	code := env.app.Execute([]string{"approval", "overtime-work", "create", "2026-11-20", "--start", "18:00", "--end", "21:00", "--route-id", testRouteID, "--yes"})
+	if code != 2 {
+		t.Fatalf("終了コード = %d, 期待値 = 2, stderr=%s", code, env.stderr.String())
+	}
+	for _, r := range requests {
+		if r.method == http.MethodPost {
+			t.Errorf("取り消しになる申請を送信しました: %+v", r)
+		}
+	}
+}
+
+// TestApprovalPaidHolidayCreate_FileMerge は、--file の有給休暇の values（1件）にフラグを重ねて送ることを検証します。
+func TestApprovalPaidHolidayCreate_FileMerge(t *testing.T) {
+	file := `{"values":[{"type":"hourly","start_at":"10:00","end_at":"12:00"}]}`
+	cases := []struct {
+		name string
+		args []string
+		want map[string]any
+	}{
+		{"--type だけを指定するとファイルの時刻を残す", []string{"--type", "hourly"}, map[string]any{"type": "hourly", "start_at": "10:00", "end_at": "12:00"}},
+		{"時刻だけを指定するとファイルの取得単位のまま時刻を上書きする", []string{"--start", "13:00", "--end", "14:00"}, map[string]any{"type": "hourly", "start_at": "13:00", "end_at": "14:00"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := newTestEnv(t, nil)
+			env.saveLoggedIn(t, "default", false)
+			args := append([]string{"approval", "paid-holiday", "create", "2026-12-01", "--file", writeRequestFile(t, file), "--route-id", testRouteID, "--dry-run"}, c.args...)
+			if code := env.app.Execute(args); code != 0 {
+				t.Fatalf("終了コード = %d, stderr=%s", code, env.stderr.String())
+			}
+			_, body := approvalDryRunBody(t, env.stdout.Bytes())
+			values, ok := body["values"].([]any)
+			if !ok || len(values) != 1 {
+				t.Fatalf("values = %#v", body["values"])
+			}
+			got, _ := values[0].(map[string]any)
+			for k, v := range c.want {
+				if got[k] != v {
+					t.Errorf("values[0].%s = %#v, 期待値 = %#v", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+// TestApprovalPaidHolidayCreate_AmbiguousFileValues は、ファイルの values が複数あるときにフラグで上書きしようとすると、
+// どれを上書きするか曖昧なため、終了コード2にすることを検証します。
+func TestApprovalPaidHolidayCreate_AmbiguousFileValues(t *testing.T) {
+	env := newTestEnv(t, nil)
+	env.saveLoggedIn(t, "default", false)
+	file := writeRequestFile(t, `{"values":[{"type":"morning"},{"type":"hourly","start_at":"15:00","end_at":"16:00"}]}`)
+
+	code := env.app.Execute([]string{"approval", "paid-holiday", "create", "2026-12-01", "--file", file, "--start", "13:00", "--end", "14:00", "--route-id", testRouteID, "--dry-run"})
+	if code != 2 {
+		t.Fatalf("終了コード = %d, 期待値 = 2", code)
+	}
+}
+
+// TestApprovalSpecialHolidayCreate_FileTimes は、特別休暇の半休の時刻がファイルにある場合は、--type だけを指定しても送れることを検証します。
+func TestApprovalSpecialHolidayCreate_FileTimes(t *testing.T) {
+	env := newTestEnv(t, nil)
+	env.saveLoggedIn(t, "default", false)
+	file := writeRequestFile(t, `{"special_holiday_setting_id":55,"holiday_type":"half","start_at":"13:00","end_at":"18:00"}`)
+
+	code := env.app.Execute([]string{"approval", "special-holiday", "create", "2026-12-02", "--file", file, "--type", "half", "--route-id", testRouteID, "--dry-run"})
+	if code != 0 {
+		t.Fatalf("終了コード = %d, stderr=%s", code, env.stderr.String())
+	}
+	_, body := approvalDryRunBody(t, env.stdout.Bytes())
+	if body["start_at"] != "13:00" || body["end_at"] != "18:00" || body["holiday_type"] != "half" {
+		t.Errorf("本文 = %v", body)
+	}
+}
+
+// TestApprovalWorkTimeCreate_ClearFalseOverridesFile は、--clear=false を明示すると、ファイルの clear_work_time: true を打ち消すことを検証します。
+func TestApprovalWorkTimeCreate_ClearFalseOverridesFile(t *testing.T) {
+	env := newTestEnv(t, nil)
+	env.saveLoggedIn(t, "default", false)
+	file := writeRequestFile(t, `{"clear_work_time":true}`)
+
+	code := env.app.Execute([]string{"approval", "work-time", "create", "2026-11-19", "--file", file, "--clear=false",
+		"--clock-in", "09:00", "--clock-out", "18:00", "--route-id", testRouteID, "--dry-run"})
+	if code != 0 {
+		t.Fatalf("終了コード = %d, stderr=%s", code, env.stderr.String())
+	}
+	_, body := approvalDryRunBody(t, env.stdout.Bytes())
+	if body["clear_work_time"] != false {
+		t.Errorf("clear_work_time = %#v, 期待値 = false", body["clear_work_time"])
 	}
 }

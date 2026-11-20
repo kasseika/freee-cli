@@ -13,6 +13,7 @@
 package freeehr
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -113,4 +114,26 @@ func OvertimeWorkSettingRequest(companyID int, date string) Request {
 	q := companyQuery(companyID)
 	q.Set("date", date)
 	return Request{Method: http.MethodGet, Path: approvalRequestsPath(OvertimeWorkRequest) + "/setting", Query: q}
+}
+
+// OvertimeWorkSetting は残業申請に必要な設定のうち、CLI が判断に使う項目です。
+type OvertimeWorkSetting struct {
+	// ShouldReflectInWorkRecord は、残業申請を勤怠に反映する設定かどうかです。
+	// true の場合、残業申請は早出・残業の時刻（early_work_*・overtime_work_*）で作ります。
+	ShouldReflectInWorkRecord bool
+}
+
+// ParseOvertimeWorkSetting は GET /api/v1/approval_requests/overtime_works/setting のレスポンスを解析します。
+// 必須の should_reflect_in_work_record が無い場合は、設定を判断できないためエラーにします。
+func ParseOvertimeWorkSetting(raw json.RawMessage) (*OvertimeWorkSetting, error) {
+	var parsed struct {
+		ShouldReflectInWorkRecord *bool `json:"should_reflect_in_work_record"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("残業申請の設定の解析に失敗しました: %w", err)
+	}
+	if parsed.ShouldReflectInWorkRecord == nil {
+		return nil, fmt.Errorf("残業申請の設定に should_reflect_in_work_record がありません: %s", raw)
+	}
+	return &OvertimeWorkSetting{ShouldReflectInWorkRecord: *parsed.ShouldReflectInWorkRecord}, nil
 }

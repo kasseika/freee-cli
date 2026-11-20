@@ -16,6 +16,8 @@
 package cli
 
 import (
+	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -66,6 +68,9 @@ type approvalKind struct {
 	addFlags func(cmd *cobra.Command, f *approvalCreateFlags)
 	// build は種類に固有の項目をフラグから本文に書き込みます。hasFile は --file を指定したかどうかです。
 	build func(cmd *cobra.Command, f *approvalCreateFlags, body map[string]any, hasFile bool) error
+	// verify は、本文の組み立て後に事業所の設定を API で確かめる必要がある種類だけが持ちます（nil なら何もしません）。
+	// --dry-run でも呼ばれます（読み取りだけで、書き込みはしません）。
+	verify func(ctx context.Context, s *session, body map[string]any) error
 }
 
 // approvalKinds は、CLI で扱う申請の種類の一覧です。
@@ -73,7 +78,7 @@ var approvalKinds = []approvalKind{
 	{use: "work-time", kind: freeehr.WorkTimeRequest, label: "勤務時間修正申請", addFlags: addWorkTimeFlags, build: buildWorkTimeBody},
 	{use: "paid-holiday", kind: freeehr.PaidHolidayRequest, label: "有給休暇申請", addFlags: addPaidHolidayFlags, build: buildPaidHolidayBody},
 	{use: "special-holiday", kind: freeehr.SpecialHolidayRequest, label: "特別休暇申請", addFlags: addSpecialHolidayFlags, build: buildSpecialHolidayBody},
-	{use: "overtime-work", kind: freeehr.OvertimeWorkRequest, label: "残業申請", addFlags: addOvertimeWorkFlags, build: buildOvertimeWorkBody},
+	{use: "overtime-work", kind: freeehr.OvertimeWorkRequest, label: "残業申請", addFlags: addOvertimeWorkFlags, build: buildOvertimeWorkBody, verify: verifyOvertimeWorkBody},
 	{use: "monthly-attendance", kind: freeehr.MonthlyAttendanceRequest, label: "月次勤怠締め申請", monthly: true,
 		addFlags: func(*cobra.Command, *approvalCreateFlags) {}, build: func(*cobra.Command, *approvalCreateFlags, map[string]any, bool) error { return nil }},
 }
@@ -192,6 +197,14 @@ func (a *App) newApprovalCreateCmd(flags *globalFlags, k approvalKind) *cobra.Co
 			if err := setCompanyID(body, s.creds.CompanyID); err != nil {
 				return err
 			}
+			if k.verify != nil {
+				ctx, cancel := timeoutContext(cmd.Context(), flags)
+				err := k.verify(ctx, s, body)
+				cancel()
+				if err != nil {
+					return err
+				}
+			}
 			return a.sendWrite(cmd.Context(), flags, s, &f.write, freeehr.CreateApprovalRequestRequest(k.kind, body))
 		},
 	}
@@ -269,8 +282,11 @@ func buildWorkTimeBody(cmd *cobra.Command, f *approvalCreateFlags, body map[stri
 	if f.clear && (f.clockIn != "" || len(f.breaks) > 0) {
 		return usageErrorf("--clear は --clock-in・--clock-out・--break と同時に指定できません")
 	}
+	// --clear=false を明示した場合も、ファイルの clear_work_time を打ち消せるよう、値をそのまま書く
+	if cmd.Flags().Changed("clear") {
+		body["clear_work_time"] = f.clear
+	}
 	if f.clear {
-		body["clear_work_time"] = true
 		return nil
 	}
 	if f.clockIn != "" {
@@ -310,19 +326,41 @@ func addPaidHolidayFlags(cmd *cobra.Command, f *approvalCreateFlags) {
 }
 
 // buildPaidHolidayBody は有給休暇申請の取得単位と時刻を、本文の values（1件）に書き込みます。
+// --file に values が1件ある場合は、その値にフラグを重ねます（フラグの値が優先されます）。
+// values が複数ある場合は、どの値を上書きするか決められないため、フラグとの併用を使い方の誤りにします。
 func buildPaidHolidayBody(cmd *cobra.Command, f *approvalCreateFlags, body map[string]any, hasFile bool) error {
-	if f.holidayType == "" {
+	if f.holidayType == "" && f.start == "" && f.end == "" {
 		if hasFile {
 			return nil
 		}
 		return usageErrorf("--type で取得単位（%s）を指定してください", strings.Join(paidHolidayTypes, "・"))
 	}
-	if !slices.Contains(paidHolidayTypes, f.holidayType) {
-		return usageErrorf("--type は %s のいずれかで指定してください: %q", strings.Join(paidHolidayTypes, "・"), f.holidayType)
+	value := map[string]any{}
+	if existing, ok := body["values"]; ok {
+		list, ok := existing.([]any)
+		if !ok || len(list) != 1 {
+			return usageErrorf("--file の values が1件ではないため、--type・--start・--end でどの値を上書きするか決められません。ファイルだけで指定してください")
+		}
+		if value, ok = list[0].(map[string]any); !ok {
+			return usageErrorf("--file の values の要素は JSON オブジェクトにしてください")
+		}
 	}
-	value := map[string]any{"type": f.holidayType}
-	if err := setStartEnd(f, value, "start_at", "end_at", f.holidayType == "hourly"); err != nil {
+	if f.holidayType != "" {
+		if !slices.Contains(paidHolidayTypes, f.holidayType) {
+			return usageErrorf("--type は %s のいずれかで指定してください: %q", strings.Join(paidHolidayTypes, "・"), f.holidayType)
+		}
+		value["type"] = f.holidayType
+	}
+	if err := setStartEnd(f, value, "start_at", "end_at"); err != nil {
 		return err
+	}
+	if _, ok := value["type"]; !ok {
+		return usageErrorf("--type で取得単位（%s）を指定してください", strings.Join(paidHolidayTypes, "・"))
+	}
+	if value["type"] == "hourly" {
+		if err := requireStartEnd(value, "時間休"); err != nil {
+			return err
+		}
 	}
 	body["values"] = []map[string]any{value}
 	return nil
@@ -351,15 +389,18 @@ func buildSpecialHolidayBody(cmd *cobra.Command, f *approvalCreateFlags, body ma
 		}
 		body["holiday_type"] = f.holidayType
 	}
-	needsTime := f.holidayType == "half" || f.holidayType == "hour"
-	if err := setStartEnd(f, body, "start_at", "end_at", needsTime); err != nil {
+	if err := setStartEnd(f, body, "start_at", "end_at"); err != nil {
 		return err
 	}
+	// 必須の項目は、ファイルの値とフラグを重ねた結果で確かめる
 	if _, ok := body["special_holiday_setting_id"]; !ok {
 		return usageErrorf("--setting-id で特別休暇設定IDを指定してください")
 	}
 	if _, ok := body["holiday_type"]; !ok {
 		return usageErrorf("--type で取得単位（%s）を指定してください", strings.Join(specialHolidayTypes, "・"))
+	}
+	if body["holiday_type"] == "half" || body["holiday_type"] == "hour" {
+		return requireStartEnd(body, "半休・時間休")
 	}
 	return nil
 }
@@ -441,10 +482,11 @@ func addStartEndFlags(cmd *cobra.Command, f *approvalCreateFlags, startUsage, en
 	cmd.Flags().StringVar(&f.end, "end", "", endUsage)
 }
 
-// setStartEnd は --start と --end の時刻を dst に書き込みます。required が true の場合は両方を必須にします。
-func setStartEnd(f *approvalCreateFlags, dst map[string]any, startKey, endKey string, required bool) error {
-	if (f.start == "") != (f.end == "") || (required && f.start == "") {
-		return usageErrorf("--start と --end は両方を指定してください（半休・時間休では必須です）")
+// setStartEnd は --start と --end の時刻を dst に書き込みます。片方だけの指定は使い方の誤りにします。
+// どちらも省略した場合は dst を変えません（必須かどうかは呼び出し元が requireStartEnd で確かめます）。
+func setStartEnd(f *approvalCreateFlags, dst map[string]any, startKey, endKey string) error {
+	if (f.start == "") != (f.end == "") {
+		return usageErrorf("--start と --end は両方を指定してください")
 	}
 	if f.start == "" {
 		return nil
@@ -459,6 +501,53 @@ func setStartEnd(f *approvalCreateFlags, dst map[string]any, startKey, endKey st
 	}
 	dst[startKey] = start
 	dst[endKey] = end
+	return nil
+}
+
+// requireStartEnd は、dst に開始・終了の時刻（start_at・end_at）があることを確かめます。label は必須になる取得単位の名前です。
+func requireStartEnd(dst map[string]any, label string) error {
+	_, hasStart := dst["start_at"]
+	_, hasEnd := dst["end_at"]
+	if !hasStart || !hasEnd {
+		return usageErrorf("%sでは --start と --end（ファイルでは start_at と end_at）が必須です", label)
+	}
+	return nil
+}
+
+// overtimeReflectionKeys は、勤怠に反映する設定の残業申請で使う早出・残業の時刻の項目です。
+var overtimeReflectionKeys = []string{"early_work_start_at", "early_work_end_at", "overtime_work_start_at", "overtime_work_end_at"}
+
+// verifyOvertimeWorkBody は、反映なしの形（start_at・end_at）だけの残業申請を、事業所の設定と照らし合わせます。
+//
+// 勤怠に反映する設定の事業所では、早出・残業の時刻が無い申請は「取り消し申請」として扱われ、
+// 対象日の承認済み残業申請がすべて取り消されます。--start/--end だけを指定した利用者はそれを意図していないため、
+// 設定を API で確かめ、反映する設定なら送信せずに使い方の誤りにします。早出・残業の時刻がある場合は確かめません。
+func verifyOvertimeWorkBody(ctx context.Context, s *session, body map[string]any) error {
+	_, hasStart := body["start_at"]
+	_, hasEnd := body["end_at"]
+	if !hasStart && !hasEnd {
+		return nil
+	}
+	for _, key := range overtimeReflectionKeys {
+		if _, ok := body[key]; ok {
+			return nil
+		}
+	}
+	date, ok := body["target_date"].(string)
+	if !ok {
+		return usageErrorf("--file の target_date は YYYY-MM-DD の文字列にしてください")
+	}
+	raw, err := s.client.Send(ctx, freeehr.OvertimeWorkSettingRequest(s.creds.CompanyID, date))
+	if err != nil {
+		return fmt.Errorf("残業申請の設定（勤怠に反映するか）を確かめられませんでした: %w", err)
+	}
+	setting, err := freeehr.ParseOvertimeWorkSetting(raw)
+	if err != nil {
+		return err
+	}
+	if setting.ShouldReflectInWorkRecord {
+		return usageErrorf("この事業所は残業申請を勤怠に反映する設定のため、--start/--end ではなく --overtime-start/--overtime-end か --early-start/--early-end で指定してください（早出・残業の時刻が無い申請は、対象日の承認済み残業申請をすべて取り消します）")
+	}
 	return nil
 }
 
