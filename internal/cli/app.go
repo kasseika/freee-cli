@@ -140,5 +140,6 @@ func (a *App) buildRootCommand() *cobra.Command {
 	root.AddCommand(a.newUserCmd(flags))
 	root.AddCommand(a.newTimeclockCmd(flags))
 	root.AddCommand(a.newWorkRecordCmd(flags))
+	root.AddCommand(a.newApprovalCmd(flags))
 	return root
 }

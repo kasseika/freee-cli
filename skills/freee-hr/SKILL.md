@@ -1,6 +1,6 @@
 ---
 name: freee-hr
-description: freee人事労務 API を freee-hr CLI から操作する。打刻（出勤・退勤・休憩）、いま打刻できる種類の確認、日ごとの勤怠記録や月の勤怠集計（労働時間・残業・有給の残り）の確認、勤怠の修正（出退勤・休憩・メモの登録や更新）、ログイン状態・事業所・従業員IDの確認など、freee人事労務・勤怠に関する依頼で使用する。
+description: freee人事労務 API を freee-hr CLI から操作する。打刻（出勤・退勤・休憩）、いま打刻できる種類の確認、日ごとの勤怠記録や月の勤怠集計（労働時間・残業・有給の残り）の確認、勤怠の修正（出退勤・休憩・メモの登録や更新）、勤怠申請（勤務時間修正・有給休暇・特別休暇・残業・月次締めの申請の作成と一覧、申請経路の確認）、ログイン状態・事業所・従業員IDの確認など、freee人事労務・勤怠に関する依頼で使用する。
 ---
 
 # freee-hr CLI
@@ -36,15 +36,16 @@ freee-hr auth status
 
 ## 書き込み操作のルール（必ず守ること）
 
-`timeclock punch` と `work-record update` は freee の会社データに書き込みます。次の手順を必ず守ってください。
+`timeclock punch`・`work-record update`・`approval <種類> create` は freee の会社データに書き込みます。次の手順を必ず守ってください。
 
 1. 勤怠の修正の前に `freee-hr work-record get <日付>` で現在の記録（出退勤・休憩・メモ・`is_editable`）を確かめ、ユーザーに変更前と変更後を示す。`is_editable` が `false` の日は修正できない（締め済みなど）ので、その旨を伝える
-2. 打刻の前に `freee-hr timeclock types` を実行し、頼まれた種類が `available_types` に含まれるかを確かめる。含まれない場合は打刻せず、いま打刻できる種類と `timeclock list` の直近の打刻をユーザーに伝える（例: 出勤済みなので出勤はできない）
-3. `--dry-run` を付けて実行し、出力（`profile`・`company_name`・`employee_id`・`path`・`body`）をユーザーに見せる
-4. ユーザーが**その内容で送信してよいと明示的に答えた場合だけ**、同じコマンドに `--yes` を付けて実行する（`--dry-run` は外す）
-5. ユーザーの了承なしに `--yes` を付けない。「打刻して」と頼まれた場合も、種類（出勤・退勤など）と対象の事業所を dry-run で示して確認する
-6. 失敗しても自動で再実行しない。終了コード4の場合は、エラー内容をユーザーに伝えて判断を仰ぐ（打刻が二重に登録されるおそれがあるため）。打刻の 400 では `timeclock types` と `timeclock list` で現在の状態を確かめてから伝える
-7. サブコマンドを先に書き、`--profile` などのフラグは後ろに書く（例: `freee-hr timeclock punch clock_in --profile test --dry-run`）
+2. 申請の前に `freee-hr approval route list` と `approval route get <id>` で申請経路と承認者の選び方を確かめ、どの経路・承認者で申請するかをユーザーに確認する（推測で選ばない）
+3. 打刻の前に `freee-hr timeclock types` を実行し、頼まれた種類が `available_types` に含まれるかを確かめる。含まれない場合は打刻せず、いま打刻できる種類と `timeclock list` の直近の打刻をユーザーに伝える（例: 出勤済みなので出勤はできない）
+4. `--dry-run` を付けて実行し、出力（`profile`・`company_name`・`employee_id`（申請では出ない）・`path`・`body`）をユーザーに見せる
+5. ユーザーが**その内容で送信してよいと明示的に答えた場合だけ**、同じコマンドに `--yes` を付けて実行する（`--dry-run` は外す）
+6. ユーザーの了承なしに `--yes` を付けない。「打刻して」と頼まれた場合も、種類（出勤・退勤など）と対象の事業所を dry-run で示して確認する
+7. 失敗しても自動で再実行しない。終了コード4の場合は、エラー内容をユーザーに伝えて判断を仰ぐ（打刻が二重に登録されるおそれがあるため）。打刻の 400 では `timeclock types` と `timeclock list` で現在の状態を確かめてから伝える
+8. サブコマンドを先に書き、`--profile` などのフラグは後ろに書く（例: `freee-hr timeclock punch clock_in --profile test --dry-run`）
 
 `--yes` を付けずに実行すると、標準入力が無いため確認できず、送信せずに終了コード2で終わります。読み取り専用のプロファイルでは `--yes` を付けても送信できません（`--dry-run` は使えます）。
 
@@ -102,7 +103,45 @@ freee-hr work-record update 2026-11-20 --clock-in 18:00 --clock-out "2026-11-21 
 - 休暇（有給の半休など）や複数の出退勤は、API の本文の形の JSON を `--file` で渡す（`-` で標準入力。日時は `YYYY-MM-DD HH:MM:SS`）。フラグで指定した項目はファイルより優先される。`company_id` は自動で入る
 - `--file -` で標準入力を使う場合は確認プロンプトに答えられないため、dry-run でユーザーの了承を得てから `--yes` を付ける
 - 振替出勤・振替休日・代休出勤・代休は API では登録できない
-- 一般の従業員の権限では更新できない場合がある（終了コード4・403）。その場合は、freee の画面から勤務時間修正を申請するよう案内する
+- 一般の従業員の権限では更新できない場合がある（終了コード4・403）。その場合は、勤務時間修正申請（`approval work-time create`）を使うかユーザーに確認する
+
+## 申請
+
+申請の種類は `work-time`（勤務時間修正）・`paid-holiday`（有給休暇）・`special-holiday`（特別休暇）・`overtime-work`（残業）・`monthly-attendance`（月次締め）です。それぞれ `list`・`get <id>`・`create` があります。
+
+```bash
+# 勤怠申請に使える申請経路（必ず最初に）
+freee-hr approval route list | jq '.approval_flow_routes[] | {id, name, usages}'
+
+# 経路の承認のステップ。resource_type が selected_user なら申請時に承認者（--approver-id）が必要
+freee-hr approval route get 1582563 | jq '.approval_flow_route.steps'
+
+# 自分のユーザーID（承認者・申請者の指定に使う。従業員IDとは別）
+freee-hr user me | jq '.id'
+
+# 勤務時間修正申請（まず dry-run）
+freee-hr approval work-time create 2026-11-19 --clock-in 09:00 --clock-out 18:00 --break 12:00-13:00 --route-id 1582563 --approver-id 111 --comment "打刻漏れのため" --dry-run
+
+# 有給休暇申請（--type は full・half・morning・afternoon・hourly。hourly は --start と --end が必須）
+freee-hr approval paid-holiday create 2026-12-01 --type full --route-id 1582563 --approver-id 111 --dry-run
+
+# 残業申請は、先に設定を確かめてから時刻のフラグを選ぶ
+freee-hr approval overtime-work setting --date 2026-11-20 | jq '{should_reflect_in_work_record, start_at, end_at}'
+freee-hr approval overtime-work create 2026-11-20 --overtime-start 18:00 --overtime-end 20:00 --route-id 1582563 --approver-id 111 --dry-run
+
+# 月次勤怠締め申請
+freee-hr approval monthly-attendance create 2026-11 --route-id 1582563 --approver-id 111 --dry-run
+
+# 申請中の有給休暇申請の一覧（--status は draft・in_progress・approved・feedback）
+freee-hr approval paid-holiday list --status in_progress | jq '.paid_holidays[] | {id, target_date, status}'
+```
+
+- `--approver-id` と `--applicant-id` は**ユーザーID**であり、従業員ID（`--employee-id`）ではない。ユーザーに承認者を確かめずに `--approver-id` を決めない
+- 特別休暇申請の `--setting-id`（特別休暇設定ID）は推測しない。分からない場合はユーザーに確認する
+- 残業申請で `should_reflect_in_work_record` が `true` の場合は `--overtime-start`/`--overtime-end`（開始は所定の退勤時刻 `end_at` と同じ）か `--early-start`/`--early-end`（終了は所定の出勤時刻 `start_at` と同じ）、`false` の場合は `--start`/`--end` を使う。反映する設定で `--start`/`--end` だけを指定すると、CLI は送信せずに終了コード2で止める（取り消し申請になるのを防ぐため）
+- フラグに無い項目（遅刻・早退の分数など）は API の本文の形の JSON を `--file` で渡す
+- 申請の更新・取り下げ・承認はこの CLI ではできない。freee の画面での操作を案内する
+- 申請の作成の 400 は、freee のエラーの文面をそのままユーザーに伝える。「勤怠申請を有効にしてください」の場合は、事業所の設定で勤怠申請の機能が無効になっている。CLI からは有効にできないので、事業所の管理者に freee人事労務の設定で有効にしてもらうよう案内し、有効になったと答えるまで再実行しない
 
 ## 対象の従業員
 

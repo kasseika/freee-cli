@@ -4,7 +4,7 @@
 
 Claude Code などのエージェントが、必要なときだけ Skill を読み込み、JSON の出力を `jq` で絞り込みながら freee人事労務を扱えるようにすることを目的としています。
 
-> 開発中です。v0.1 では打刻・勤怠の確認・勤怠の修正・申請（作成・一覧）に対応する予定です。現在は認証（`auth`）・ログインユーザーの取得（`user me`）・打刻（`timeclock`）・勤怠の確認（`work-record get / summary`）・勤怠の修正（`work-record update`）に対応しています。
+> 開発中です。v0.1 では打刻・勤怠の確認・勤怠の修正・申請（作成・一覧）に対応する予定です。現在は認証（`auth`）・ログインユーザーの取得（`user me`）・打刻（`timeclock`）・勤怠の確認（`work-record get / summary`）・勤怠の修正（`work-record update`）・申請（`approval`）に対応しています。
 
 ## インストール
 
@@ -122,9 +122,54 @@ freee-hr work-record update 2026-11-20 --file work-record.json --dry-run
 
 `--file` の JSON は [勤怠の更新 API](https://developer.freee.co.jp/reference/hr/reference) の本文と同じ形です（日時は `YYYY-MM-DD HH:MM:SS`）。`company_id` はプロファイルの事業所が自動で入ります。振替出勤・振替休日・代休出勤・代休は API では登録できません。
 
+### 申請（勤怠申請）
+
+勤務時間修正・有給休暇・特別休暇・残業・月次締めの申請を作成し、一覧と詳細を表示します。
+
+| 種類 | コマンド | 対象 |
+|---|---|---|
+| 勤務時間修正申請 | `approval work-time` | 日（YYYY-MM-DD） |
+| 有給休暇申請 | `approval paid-holiday` | 日 |
+| 特別休暇申請 | `approval special-holiday` | 日 |
+| 残業申請 | `approval overtime-work` | 日 |
+| 月次勤怠締め申請 | `approval monthly-attendance` | 年月（YYYY-MM） |
+
+申請の作成には、申請経路ID（`--route-id`）が必須です。申請時に承認者を選ぶ型の経路（`approval route get` のステップの `resource_type` が `selected_user`）では、承認者のユーザーID（`--approver-id`）も指定します。承認者のIDは**従業員IDではなくユーザーID**です（自分のユーザーIDは `freee-hr user me` の `id`）。
+
+```bash
+# 勤怠申請に使える申請経路と、その承認のステップ
+freee-hr approval route list
+freee-hr approval route get 1582563
+
+# 勤務時間修正申請（9:00〜18:00、休憩 12:00〜13:00）。送信前に確認を求めます
+freee-hr approval work-time create 2026-11-19 --clock-in 09:00 --clock-out 18:00 --break 12:00-13:00 --route-id 1582563 --approver-id 111 --comment "打刻漏れのため"
+
+# 有給休暇申請（全休。時間休は --type hourly --start 10:00 --end 12:00）
+freee-hr approval paid-holiday create 2026-12-01 --type full --route-id 1582563 --approver-id 111
+
+# 特別休暇申請（半休・時間休は --start と --end が必須）
+freee-hr approval special-holiday create 2026-12-02 --setting-id 55 --type full --route-id 1582563 --approver-id 111
+
+# 残業申請。どの時刻を指定するかは事業所の設定で変わるため、先に設定を確かめる
+freee-hr approval overtime-work setting --date 2026-11-20
+freee-hr approval overtime-work create 2026-11-20 --overtime-start 18:00 --overtime-end 20:00 --route-id 1582563 --approver-id 111
+
+# 月次勤怠締め申請
+freee-hr approval monthly-attendance create 2026-11 --route-id 1582563 --approver-id 111
+
+# 申請の一覧（状態・対象日の期間・申請者のユーザーIDで絞り込める）と詳細
+freee-hr approval paid-holiday list --status in_progress --from 2026-12-01 --to 2026-12-31
+freee-hr approval paid-holiday get 77
+```
+
+- 残業申請は、`overtime-work setting` の `should_reflect_in_work_record` が `true`（勤怠に反映する）なら `--overtime-start`/`--overtime-end`・`--early-start`/`--early-end` を、`false` なら `--start`/`--end` を指定します。反映する設定では、残業の開始は所定の退勤時刻、早出の終了は所定の出勤時刻と同じにします。`--start`/`--end` だけを指定した場合は、CLI が送信の前（`--dry-run` でも）に設定を取得し、反映する設定なら送信しません（反映する設定で早出・残業の時刻が無い申請は、対象日の承認済み残業申請をすべて取り消す申請になるため）。
+- フラグに無い項目（遅刻・早退の分数、日をまたぐ時刻、勤怠に反映する設定での残業申請の取り消しなど）は、`--file` に [申請の作成 API](https://developer.freee.co.jp/reference/hr/reference) の本文と同じ形の JSON を指定します。フラグの値が優先され、`company_id` は自動で入ります。
+- 部門役職データ連携を使う申請経路（役職指定・部門および役職指定）は、API では参照だけができ、申請の作成には使えません。
+- 申請の更新・取り下げ・承認は v0.1 では対応していません。freee の画面で操作してください。
+
 ### 書き込み系コマンドの安全策
 
-freee の会社データに書き込むコマンド（`timeclock punch`・`work-record update`）は、次の順に安全策を通ります。
+freee の会社データに書き込むコマンド（`timeclock punch`・`work-record update`・`approval <種類> create`）は、次の順に安全策を通ります。
 
 1. `--dry-run` を付けると、API を呼ばずに送る予定のリクエスト（事業所・従業員・メソッド・パス・本文）を JSON で出力します。
 2. 読み取り専用のプロファイル（`auth login --read-only`）では送信を拒否します（終了コード2）。
@@ -144,7 +189,11 @@ Claude Code から使う場合は、プロジェクトの `.claude/settings.json
       "Bash(freee-hr work-record update *)",
       "Bash(freee-hr * work-record update *)",
       "Bash(./freee-hr work-record update *)",
-      "Bash(./freee-hr * work-record update *)"
+      "Bash(./freee-hr * work-record update *)",
+      "Bash(freee-hr approval * create *)",
+      "Bash(freee-hr * approval * create *)",
+      "Bash(./freee-hr approval * create *)",
+      "Bash(./freee-hr * approval * create *)"
     ]
   }
 }

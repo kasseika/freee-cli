@@ -50,7 +50,8 @@ type writePlan struct {
 	Profile     string `json:"profile"`
 	CompanyID   int    `json:"company_id"`
 	CompanyName string `json:"company_name"`
-	EmployeeID  int    `json:"employee_id"`
+	// EmployeeID は対象の従業員IDです。申請の作成のように従業員IDを使わないコマンドでは 0 になり、出力しません。
+	EmployeeID int `json:"employee_id,omitempty"`
 	// Request は送る予定のリクエストです。埋め込みのため、JSON では method・path・query・body が同じ階層に並びます。
 	freeehr.Request
 }
