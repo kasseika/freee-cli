@@ -1,17 +1,17 @@
 module github.com/kasseika/freee-cli
 
-go 1.23.0
+go 1.26.0
 
 require (
 	github.com/gofrs/flock v0.12.1
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/oauth2 v0.30.0
-	golang.org/x/term v0.29.0
+	golang.org/x/term v0.48.0
 )
 
 require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
-	golang.org/x/sys v0.30.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 )
