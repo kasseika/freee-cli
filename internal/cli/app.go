@@ -138,5 +138,7 @@ func (a *App) buildRootCommand() *cobra.Command {
 
 	root.AddCommand(a.newAuthCmd(flags))
 	root.AddCommand(a.newUserCmd(flags))
+	root.AddCommand(a.newTimeclockCmd(flags))
+	root.AddCommand(a.newWorkRecordCmd(flags))
 	return root
 }

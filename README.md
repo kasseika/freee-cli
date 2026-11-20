@@ -4,7 +4,7 @@
 
 Claude Code などのエージェントが、必要なときだけ Skill を読み込み、JSON の出力を `jq` で絞り込みながら freee人事労務を扱えるようにすることを目的としています。
 
-> 開発中です。v0.1 では打刻・勤怠の確認・勤怠の修正・申請（作成・一覧）に対応する予定です。現在は認証（`auth`）とログインユーザーの取得（`user me`）だけに対応しています。
+> 開発中です。v0.1 では打刻・勤怠の確認・勤怠の修正・申請（作成・一覧）に対応する予定です。現在は認証（`auth`）・ログインユーザーの取得（`user me`）・打刻（`timeclock`）・勤怠の確認（`work-record get / summary`）に対応しています。
 
 ## インストール
 
@@ -78,6 +78,58 @@ freee-hr --profile test auth logout
 1. Client Secret が、その Client ID のアプリのものと一致しているか（アプリ管理画面の値と文字数を比べてください）
 2. アプリ管理画面のコールバックURLが、表示された `redirect_uri`（既定は `http://localhost:8765/callback`）と完全に一致し、保存されているか
 3. ブラウザで許可してから、すぐにログインを完了したか（認可コードは1回しか使えません）
+
+### 打刻と勤怠の確認
+
+対象は、ログイン時に選んだ事業所と、ログインユーザー本人（従業員）です。管理者が他の従業員を扱う場合は `--employee-id <従業員ID>` を指定します。
+
+```bash
+# いま打刻できる種類（clock_in / break_begin / break_end / clock_out）
+freee-hr timeclock types
+
+# 打刻の一覧（期間・件数は省略可）
+freee-hr timeclock list --from 2026-11-01 --to 2026-11-20
+
+# 打刻する（送信前に確認を求めます）
+freee-hr timeclock punch clock_in
+
+# 日をまたいだ退勤は、打刻日に前日を指定する
+freee-hr timeclock punch clock_out --base-date 2026-11-19
+
+# 指定日の勤怠記録
+freee-hr work-record get 2026-11-20
+
+# 月の集計（労働時間・残業・有給の残りなど）。--with-records で日ごとの記録も含める
+freee-hr work-record summary 2026-11
+```
+
+`work-record summary` の年月は **給与支払い年月** です（freee の API の仕様）。給与を翌月に支払う事業所では、`2026-11` が10月分の勤怠を指すことがあります。実際の集計期間はレスポンスの `start_date`・`end_date` で確認してください。
+
+### 書き込み系コマンドの安全策
+
+freee の会社データに書き込むコマンド（現在は `timeclock punch`）は、次の順に安全策を通ります。
+
+1. `--dry-run` を付けると、API を呼ばずに送る予定のリクエスト（事業所・従業員・メソッド・パス・本文）を JSON で出力します。
+2. 読み取り専用のプロファイル（`auth login --read-only`）では送信を拒否します（終了コード2）。
+3. `--yes` が無い場合は、送る予定の内容を表示して `[y/N]` で確認します。`y` 以外の答え、または標準入力が無い場合は送信しません（終了コード2）。
+4. 送信に失敗しても自動で再試行しません（二重の打刻を防ぐため）。
+
+Claude Code から使う場合は、プロジェクトの `.claude/settings.json` で書き込み系コマンドを `ask` にしておくと、Claude Code が `--yes` を付けて実行しようとしても、人の確認が入ります（[権限の設定](https://code.claude.com/docs/en/permissions)。`ask` は `allow` より優先されます）。グローバルフラグをサブコマンドの前に書いた場合と、カレントディレクトリでビルドしたバイナリ（`./freee-hr`）を使う場合にも一致するよう、4通りの形を並べます。
+
+```json
+{
+  "permissions": {
+    "ask": [
+      "Bash(freee-hr timeclock punch *)",
+      "Bash(freee-hr * timeclock punch *)",
+      "Bash(./freee-hr timeclock punch *)",
+      "Bash(./freee-hr * timeclock punch *)"
+    ]
+  }
+}
+```
+
+この設定はコマンドの文字列に対する一致で判定されるため、絶対パス（`/usr/local/bin/freee-hr` など）や `sh -c '...'` 経由の呼び出しには一致しません。`freee-hr` は PATH の通った場所にインストールし、コマンド名だけで呼び出してください（Skill もその前提で書かれています）。CLI 側の確認（`--yes` が無ければ送信しない）は、呼び出し方に関わらず働きます。
 
 ### 出力と終了コード
 
