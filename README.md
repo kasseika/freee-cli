@@ -8,6 +8,8 @@ Claude Code などのエージェントが、必要なときだけ Skill を読�
 
 ## インストール
 
+`go install` とソースからのビルドには、Go 1.26 以上が必要です。Releases のアーカイブを使う場合、Go は不要です。
+
 ### go install（開発者向け）
 
 ```bash
